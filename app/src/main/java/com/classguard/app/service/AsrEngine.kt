@@ -2,6 +2,9 @@ package com.classguard.app.service
 
 import android.content.Context
 import android.util.Log
+import com.classguard.app.recognition.KeywordSpec
+import com.classguard.app.recognition.KeywordType
+import com.classguard.app.recognition.RosterEntry
 import com.classguard.app.recognition.TriggerMatcher
 import com.k2fsa.sherpa.onnx.EndpointConfig
 import com.k2fsa.sherpa.onnx.EndpointRule
@@ -34,17 +37,29 @@ object AsrEngine {
 
     private const val HOTWORDS_SCORE = 2.0f
 
+    // 端点检测参数（针对老师讲课停顿多的远场场景调优；改动需真机 A/B）：
+    // rule2 从 0.8s 放宽到 1.2s、最小语句 2.4s→3.0s：减少"中途停顿被误判为句末"
+    // 导致一句话被拆碎、关键词被切到不同句而漏触发的问题；
+    // rule1 2.4s→2.2s：略提升短句 final 的实时性。
+    private const val ENDPOINT_RULE1_TRAILING_SILENCE = 2.2f
+    private const val ENDPOINT_RULE2_TRAILING_SILENCE = 1.2f
+    private const val ENDPOINT_RULE2_MIN_UTTERANCE = 3.0f
+    private const val ENDPOINT_RULE3_MAX_UTTERANCE = 20f
+
     /**
-     * 关键词 → sherpa-onnx 热词字符串：一行一个词，
+     * 关键词与名单 → sherpa-onnx 热词字符串：一行一个词，
+     * 核心词 + 语境词 + 名单全部变体（排除词不进热词）；
      * 纯中文按字空格分隔（与 tokens.txt 的字级建模单元对应）；
      * 含字母/数字的词无法稳定映射到建模单元，跳过（触发匹配仍由文本层兜底）。
      */
-    fun buildHotwordsText(keywords: List<String>): String =
-        keywords
+    fun buildHotwordsText(specs: List<KeywordSpec>, roster: List<RosterEntry>): String {
+        val texts = specs.map { it.text } + roster.flatMap { it.allTexts() }
+        return texts
             .map { TriggerMatcher.normalize(it) }
             .filter { it.isNotEmpty() && it.all { ch -> ch.code in 0x4E00..0x9FFF } }
             .distinct()
             .joinToString("\n") { it.toCharArray().joinToString(" ") }
+    }
 
     fun createRecognizer(context: Context): OnlineRecognizer =
         OnlineRecognizer(
@@ -65,13 +80,23 @@ object AsrEngine {
                     modelingUnit = "cjkchar",
                 ),
                 enableEndpoint = true,
-                // rule1：说完后静音 2.4s 判定一句话结束；
-                // rule2：已说满 2.4s 且静音 0.8s 提前断句，让“出题”和“点人”两句话分开；
-                // rule3：单句最长 20s 强制断句。
+                // 端点规则（常量含义见上方注释）
                 endpointConfig = EndpointConfig(
-                    rule1 = EndpointRule(mustContainNonSilence = false, minTrailingSilence = 2.4f, minUtteranceLength = 0f),
-                    rule2 = EndpointRule(mustContainNonSilence = true, minTrailingSilence = 0.8f, minUtteranceLength = 2.4f),
-                    rule3 = EndpointRule(mustContainNonSilence = false, minTrailingSilence = 0f, minUtteranceLength = 20f),
+                    rule1 = EndpointRule(
+                        mustContainNonSilence = false,
+                        minTrailingSilence = ENDPOINT_RULE1_TRAILING_SILENCE,
+                        minUtteranceLength = 0f,
+                    ),
+                    rule2 = EndpointRule(
+                        mustContainNonSilence = true,
+                        minTrailingSilence = ENDPOINT_RULE2_TRAILING_SILENCE,
+                        minUtteranceLength = ENDPOINT_RULE2_MIN_UTTERANCE,
+                    ),
+                    rule3 = EndpointRule(
+                        mustContainNonSilence = false,
+                        minTrailingSilence = 0f,
+                        minUtteranceLength = ENDPOINT_RULE3_MAX_UTTERANCE,
+                    ),
                 ),
                 // 热词偏置要求 modified_beam_search；分数作用于 createStream 传入的热词
                 decodingMethod = "modified_beam_search",

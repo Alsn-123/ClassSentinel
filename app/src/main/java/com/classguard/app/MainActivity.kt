@@ -1,6 +1,7 @@
 package com.classguard.app
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -28,12 +29,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,6 +66,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.classguard.app.alert.AlertManager
 import com.classguard.app.data.PrefsStore
+import com.classguard.app.data.TriggerRecord
+import com.classguard.app.recognition.KeywordSpec
+import com.classguard.app.recognition.KeywordType
+import com.classguard.app.recognition.RosterCodec
 import com.classguard.app.recognition.TriggerEvent
 import com.classguard.app.selftest.SelfTest
 import com.classguard.app.service.RecognitionService
@@ -134,11 +143,17 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    fun openAutoStartSettings() {
+        startActivity(RomGuides.autoStartIntent(this))
+    }
+
     fun ignoringBatteryOptimizations(): Boolean {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         return pm.isIgnoringBatteryOptimizations(packageName)
     }
 
+    // 侧载课堂工具的合理使用场景（非 Play 渠道分发），且可随时在系统设置撤销
+    @SuppressLint("BatteryLife")
     fun requestIgnoreBatteryOptimizations() {
         runCatching {
             startActivity(
@@ -171,7 +186,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /** 设置变化后通知运行中的服务即时生效。 */
+    /** 设置变化后通知运行中的服务原地生效。 */
     fun notifySettingsChanged() {
         if (ServiceBus.running.value) {
             startService(
@@ -181,14 +196,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun testAlert() {
+    fun testAlert(directed: Boolean) {
         AlertManager.onTrigger(
             this,
             TriggerEvent(
                 timeMillis = System.currentTimeMillis(),
-                keyword = "测试",
-                utterance = "（演示）同学们，下面这道题，我找个同学来回答一下。",
+                keyword = if (directed) "张三" else "测试",
+                utterance = if (directed) {
+                    "（演示）张三，你来回答一下这道题。"
+                } else {
+                    "（演示）同学们，下面这道题，我找个同学来回答一下。"
+                },
                 context = "这道题考的是第三章的内容，大家先看两分钟。",
+                directed = directed,
             ),
             sound = prefs.soundEnabled,
             vibration = prefs.vibrationEnabled,
@@ -204,16 +224,22 @@ fun AppScreen(activity: MainActivity) {
     val prefs = remember { activity.prefs }
 
     val running by ServiceBus.running.collectAsState()
+    val modelLoading by ServiceBus.modelLoading.collectAsState()
+    val errorMessage by ServiceBus.error.collectAsState()
     val partial by ServiceBus.partialText.collectAsState()
     val historyVersion by ServiceBus.historyVersion.collectAsState()
 
-    var keywords by remember { mutableStateOf(prefs.keywords) }
+    var specs by remember { mutableStateOf(prefs.keywordSpecs) }
+    var roster by remember { mutableStateOf(prefs.roster) }
     var cooldownSeconds by remember { mutableIntStateOf((prefs.cooldownMillis / 1000).toInt()) }
     var soundOn by remember { mutableStateOf(prefs.soundEnabled) }
     var vibrateOn by remember { mutableStateOf(prefs.vibrationEnabled) }
     var history by remember { mutableStateOf(prefs.history()) }
 
     var newKeyword by remember { mutableStateOf("") }
+    var newType by remember { mutableStateOf(KeywordType.CORE) }
+    var newName by remember { mutableStateOf("") }
+    var showImportDialog by remember { mutableStateOf(false) }
     var selfTestRunning by remember { mutableStateOf(false) }
     var selfTestResult by remember { mutableStateOf<String?>(null) }
 
@@ -225,6 +251,7 @@ fun AppScreen(activity: MainActivity) {
     val overlayGranted = remember(tick) { activity.canDrawOverlays() }
     val batteryExempt = remember(tick) { activity.ignoringBatteryOptimizations() }
     val hasTestWav = remember { SelfTest.hasTestWav(activity.assets) && BuildConfig.DEBUG }
+    val romSteps = remember { RomGuides.steps() }
 
     Column(
         modifier = Modifier
@@ -243,17 +270,38 @@ fun AppScreen(activity: MainActivity) {
             )
         }
 
+        // 错误横幅（v1.2 错误可见性）
+        errorMessage?.let { err ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+            ) {
+                Text(
+                    "⚠ $err",
+                    modifier = Modifier.padding(12.dp),
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    fontSize = 13.sp,
+                )
+            }
+        }
+
         // 状态与启停
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (running) "● 监听中" else "○ 已停止",
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (running) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (running && modelLoading) {
+                        CircularProgressIndicator(modifier = Modifier.height(18.dp).width(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("模型加载中…", fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Text(
+                            if (running) "● 监听中" else "○ 已停止",
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (running) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
-                if (running) {
+                if (running && !modelLoading) {
                     Text(
                         if (partial.isEmpty()) "（正在听…说句话试试）" else "正在听：$partial",
                         fontSize = 12.sp,
@@ -273,7 +321,8 @@ fun AppScreen(activity: MainActivity) {
                     Text(if (running) "停止监听" else "开始监听", fontSize = 17.sp)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { activity.testAlert() }) { Text("测试提醒效果") }
+                    TextButton(onClick = { activity.testAlert(directed = false) }) { Text("测试提醒") }
+                    TextButton(onClick = { activity.testAlert(directed = true) }) { Text("测试定向提醒") }
                     if (hasTestWav) {
                         TextButton(
                             enabled = !selfTestRunning,
@@ -287,7 +336,7 @@ fun AppScreen(activity: MainActivity) {
                                     results.forEach { r ->
                                         r.triggers.forEach {
                                             AlertManager.onTrigger(
-                                                activity, it, prefs.soundEnabled, prefs.vibrationEnabled
+                                                activity, it, prefs.soundEnabled, prefs.vibrationEnabled,
                                             )
                                         }
                                     }
@@ -329,13 +378,28 @@ fun AppScreen(activity: MainActivity) {
             PermissionRow(
                 "电池优化白名单", "防止系统休眠时杀掉后台监听", batteryExempt
             ) { activity.requestIgnoreBatteryOptimizations() }
+            // 自启动（无法探测授权状态，固定展示入口）
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("自启动 / 后台管理", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        "点按直接跳转${RomGuides.detectVendor().label}的设置页",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = { activity.openAutoStartSettings() }) { Text("去设置") }
+            }
         }
 
-        // 设置
+        // 提醒设置
         SectionCard("提醒设置") {
             Text("冷却时间：${cooldownSeconds} 秒", fontSize = 14.sp)
             Text(
-                "触发一次后，冷却时间内不再重复提醒",
+                "同一关键词触发后的静默期（短词自动延长、长词自动减半）",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -356,10 +420,10 @@ fun AppScreen(activity: MainActivity) {
             }
         }
 
-        // 关键词
-        SectionCard("触发关键词（${keywords.size}）") {
+        // 三类关键词
+        SectionCard("触发关键词") {
             Text(
-                "老师说话内容包含以下任一关键词即提醒，可自行增删",
+                "核心词命中即可能提醒；语境词非空时需 核心词+语境词 同时命中（可跨句）；排除词屏蔽整句。清空语境词即回到只按核心词提醒。",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -369,41 +433,129 @@ fun AppScreen(activity: MainActivity) {
                     value = newKeyword,
                     onValueChange = { newKeyword = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("输入关键词，如：谁来回答") },
+                    placeholder = { Text("输入关键词") },
                     singleLine = true,
                 )
                 Spacer(Modifier.width(8.dp))
                 IconButton(
                     onClick = {
                         val kw = newKeyword.trim()
-                        if (kw.isNotEmpty() && keywords.none { it.equals(kw, ignoreCase = true) }) {
-                            keywords = keywords + kw
-                            prefs.keywords = keywords
+                        if (kw.isNotEmpty() && specs.none { it.text == kw }) {
+                            specs = specs + KeywordSpec(kw, newType)
+                            prefs.keywordSpecs = specs
                             activity.notifySettingsChanged()
                         }
                         newKeyword = ""
                     },
                 ) { Icon(Icons.Default.Add, contentDescription = "添加关键词") }
             }
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KeywordType.entries.forEach { t ->
+                    FilterChip(
+                        selected = newType == t,
+                        onClick = { newType = t },
+                        label = { Text(typeLabel(t)) },
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                keywords.forEach { kw ->
+                specs.forEach { spec ->
                     AssistChip(
                         onClick = {
-                            keywords = keywords - kw
-                            prefs.keywords = keywords
+                            specs = specs - spec
+                            prefs.keywordSpecs = specs
                             activity.notifySettingsChanged()
                         },
-                        label = { Text(kw) },
-                        trailingIcon = { Icon(Icons.Default.Close, contentDescription = "删除", Modifier.height(14.dp)) },
+                        label = { Text("${typeLabel(spec.type)}·${spec.text}") },
+                        trailingIcon = {
+                            Icon(Icons.Default.Close, contentDescription = "删除", Modifier.height(14.dp))
+                        },
                     )
                 }
             }
             TextButton(onClick = {
-                keywords = PrefsStore.DEFAULT_KEYWORDS
-                prefs.keywords = keywords
+                specs = PrefsStore.defaultSpecs()
+                prefs.keywordSpecs = specs
                 activity.notifySettingsChanged()
             }) { Text("恢复默认词表") }
+        }
+
+        // 名单（v2.0）
+        SectionCard("名单（听到名字就提醒）") {
+            Text(
+                "老师点到名字即提醒；标记⭐的名字走专属强提醒。同音字自动匹配" +
+                    "（如「张三」被识别成「章三」也能触发），无需手动录入错字。" +
+                    "每行一条可用 / 分隔别名，如：张三/老张",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("姓名或别名") },
+                    singleLine = true,
+                )
+                Spacer(Modifier.width(8.dp))
+                IconButton(
+                    onClick = {
+                        val name = newName.trim()
+                        if (name.isNotEmpty() && roster.none { it.displayName == name }) {
+                            roster = roster + com.classguard.app.recognition.RosterEntry(displayName = name)
+                            prefs.roster = roster
+                            activity.notifySettingsChanged()
+                        }
+                        newName = ""
+                    },
+                ) { Icon(Icons.Default.Add, contentDescription = "添加名单") }
+            }
+            TextButton(onClick = { showImportDialog = true }) { Text("批量导入") }
+            roster.forEach { entry ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            (if (entry.isMe) "⭐ " else "") + entry.displayName,
+                            fontSize = 14.sp,
+                            fontWeight = if (entry.isMe) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                        val extra = (entry.aliases + entry.asrVariants).joinToString("、")
+                        if (extra.isNotEmpty()) {
+                            Text(
+                                "别名/变体：$extra",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    IconButton(onClick = {
+                        roster = roster.map {
+                            if (it == entry) it.copy(isMe = !it.isMe) else it.copy(isMe = false)
+                        }
+                        prefs.roster = roster
+                        activity.notifySettingsChanged()
+                    }) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "标记为我的名字",
+                            tint = if (entry.isMe) Color(0xFFFFB300) else Color(0xFFCCCCCC),
+                        )
+                    }
+                    IconButton(onClick = {
+                        roster = roster - entry
+                        prefs.roster = roster
+                        activity.notifySettingsChanged()
+                    }) {
+                        Icon(Icons.Default.Delete, contentDescription = "删除")
+                    }
+                }
+            }
         }
 
         // 历史
@@ -412,25 +564,7 @@ fun AppScreen(activity: MainActivity) {
                 Text("暂无记录", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 history.forEach { record ->
-                    Column(Modifier.padding(vertical = 6.dp)) {
-                        Row {
-                            Text(
-                                formatTime(record.timeMillis),
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(record.keyword, fontSize = 12.sp, color = Color(0xFFB71C1C))
-                        }
-                        Text(record.utterance, fontSize = 14.sp)
-                        if (record.context.isNotBlank()) {
-                            Text(
-                                "前文：${record.context}",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    HistoryRow(record)
                 }
                 TextButton(onClick = {
                     prefs.clearHistory()
@@ -439,19 +573,50 @@ fun AppScreen(activity: MainActivity) {
             }
         }
 
-        // 使用提示
+        // 使用提示（按检测到的 ROM 动态渲染）
         SectionCard("使用提示") {
             TipLine("手机平放桌面，尽量靠近讲台方向；距离越近识别越准。")
             TipLine("开始监听后可锁屏或切换其他 App，状态栏会保留常驻通知。")
             TipLine("建议上课时插电，持续识别有一定耗电。")
-            TipLine("小米：设置 → 应用设置 → 应用管理 → 课堂哨兵 → 自启动；省电策略改为无限制。")
-            TipLine("华为：设置 → 电池 → 启动管理 → 课堂哨兵 → 允许自启动/后台运行。")
-            TipLine("OPPO/vivo：在电池与自启动管理中允许后台运行。")
-            TipLine("提醒常被误触发时，删除过短的词（如单字词）；漏触发时，添加老师说过的原话关键词。")
-            TipLine("关键词同时作为识别热词偏置，在下次开始监听时生效。")
+            romSteps.forEach { TipLine(it) }
+            TipLine("低置信度命中只发轻量通知，避免识别错字造成的误提醒打扰。")
         }
 
         Spacer(Modifier.height(24.dp))
+    }
+
+    if (showImportDialog) {
+        var importText by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    val parsed = RosterCodec.parseImportText(importText)
+                    if (parsed.isNotEmpty()) {
+                        val existing = roster.map { it.displayName }.toSet()
+                        roster = roster + parsed.filter { it.displayName !in existing }
+                        prefs.roster = roster
+                        activity.notifySettingsChanged()
+                    }
+                    showImportDialog = false
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportDialog = false }) { Text("取消") }
+            },
+            title = { Text("批量导入名单") },
+            text = {
+                Column {
+                    Text("每行一条，用 / 分隔别名：\n张三/老张\n李四", fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importText,
+                        onValueChange = { importText = it },
+                        modifier = Modifier.fillMaxWidth().height(160.dp),
+                    )
+                }
+            },
+        )
     }
 
     selfTestResult?.let { text ->
@@ -469,6 +634,47 @@ fun AppScreen(activity: MainActivity) {
                 ) { Text(text, fontSize = 13.sp) }
             },
         )
+    }
+}
+
+private fun typeLabel(type: KeywordType): String = when (type) {
+    KeywordType.CORE -> "核心"
+    KeywordType.CONTEXT -> "语境"
+    KeywordType.EXCLUDE -> "排除"
+}
+
+@Composable
+private fun HistoryRow(record: TriggerRecord) {
+    Column(Modifier.padding(vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                formatTime(record.timeMillis),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                (if (record.directed) "🎯 " else "") + record.keyword,
+                fontSize = 12.sp,
+                color = Color(0xFFB71C1C),
+            )
+            record.confidence?.let { cf ->
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "置信 %.0f%%".format(cf * 100),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(record.utterance, fontSize = 14.sp)
+        if (record.context.isNotBlank()) {
+            Text(
+                "前文：${record.context}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

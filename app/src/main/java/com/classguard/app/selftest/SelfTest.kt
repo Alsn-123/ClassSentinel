@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.res.AssetManager
 import android.util.Log
 import com.classguard.app.data.PrefsStore
+import com.classguard.app.recognition.Confidence
+import com.classguard.app.recognition.PinyinIndex
+import com.classguard.app.recognition.RosterMatcher
 import com.classguard.app.recognition.TriggerEvent
 import com.classguard.app.recognition.TriggerMatcher
 import com.classguard.app.service.AsrEngine
@@ -58,23 +61,39 @@ object SelfTest {
             if (pcm.isEmpty()) return SectionResult(name, emptyList(), emptyList(), "测试音频为空")
 
             val rec: OnlineRecognizer = AsrEngine.createRecognizer(context)
-            val stream = rec.createStream(AsrEngine.buildHotwordsText(prefs.keywords))
-            val matcher = TriggerMatcher(prefs.keywords, cooldownMillis = prefs.cooldownMillis)
+            val stream = rec.createStream(AsrEngine.buildHotwordsText(prefs.keywordSpecs, prefs.roster))
+            val matcher = TriggerMatcher(prefs.keywordSpecs, baseCooldownMillis = prefs.cooldownMillis)
+            val rosterMatcher = RosterMatcher(
+                prefs.roster, prefs.keywordSpecs,
+                baseCooldownMillis = prefs.cooldownMillis,
+                pinyin = PinyinIndex.holder(context),
+            )
             val finals = ArrayList<String>()
             val triggers = ArrayList<TriggerEvent>()
             val chunk = 1600 // 100ms
             var offset = 0
             while (offset < pcm.size) {
                 val end = minOf(offset + chunk, pcm.size)
-                    stream.acceptWaveform(pcm.copyOfRange(offset, end), 16000)
+                stream.acceptWaveform(pcm.copyOfRange(offset, end), 16000)
                 offset = end
                 while (rec.isReady(stream)) rec.decode(stream)
 
-                val partial = rec.getResult(stream).text
+                val result = rec.getResult(stream)
+                val partial = result.text
                 if (partial.isNotEmpty()) {
-                    matcher.onPartial(partial)?.let {
-                        Log.i(TAG, "自测触发: ${it.keyword}")
-                        triggers.add(it)
+                    val kwEvent = matcher.onPartial(partial)
+                    val nameEvent = rosterMatcher.onPartial(partial, matcher.contextSnapshot())
+                    val event = listOfNotNull(
+                        nameEvent?.takeIf { it.directed },
+                        kwEvent,
+                        nameEvent,
+                    ).firstOrNull()
+                    event?.let {
+                        val conf = Confidence.forKeyword(
+                            result.tokens.toList(), result.ysProbs, TriggerMatcher.normalize(it.keyword)
+                        )
+                        Log.i(TAG, "自测触发: ${it.keyword} conf=${conf ?: "n/a"}")
+                        triggers.add(it.copy(confidence = conf))
                     }
                 }
                 if (rec.isEndpoint(stream)) {
@@ -84,6 +103,7 @@ object SelfTest {
                         Log.i(TAG, "自测触发(final): ${it.keyword}")
                         triggers.add(it)
                     }
+                    rosterMatcher.onFinal()
                     rec.reset(stream)
                 }
             }

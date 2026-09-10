@@ -11,5 +11,14 @@
 
     <!-- 悬浮提醒 -->
     <string name="alert_title">🔔 老师可能在点名！</string>
+    <string name="alert_directed_title">🎯 点到「%1$s」了！</string>
     <string name="alert_context_prefix">前文：%1$s</string>
+
+    <!-- 错误与恢复 -->
+    <string name="error_no_mic">缺少麦克风权限，监听无法启动</string>
+    <string name="error_fgs_start_failed">系统限制了后台启动，请回到应用点「开始监听」</string>
+    <string name="error_model_load">识别模型加载失败，请重新安装完整版</string>
+    <string name="error_mic_init">麦克风初始化失败，可能被其他应用占用</string>
+    <string name="recover_notif_title">课堂哨兵已退出</string>
+    <string name="recover_notif_text">点按此处回到应用，恢复课堂监听</string>
 </resources>

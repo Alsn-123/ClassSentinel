@@ -12,8 +12,8 @@ android {
         applicationId = "com.classguard.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 4
+        versionName = "2.1"
 
         ndk {
             // 真机为 arm64，模拟器为 x86_64；Android 8+ 设备几乎全是 arm64
@@ -52,4 +52,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
+    // JVM 单测里使用真实的 org.json（android.jar 里是 stub）
+    testImplementation(libs.json)
 }

@@ -156,7 +156,7 @@ class OnlineRecognizer(
 }
 
 
-/*
+/**
 Please see
 https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html
 for a list of pre-trained models.
@@ -764,7 +764,7 @@ fun getModelConfig(type: Int): OnlineModelConfig? {
     return null
 }
 
-/*
+/**
 Please see
 https://k2-fsa.github.io/sherpa/onnx/pretrained_models/index.html
 for a list of pre-trained models.

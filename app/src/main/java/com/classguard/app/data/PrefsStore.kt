@@ -2,6 +2,11 @@ package com.classguard.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.classguard.app.recognition.KeywordSpec
+import com.classguard.app.recognition.KeywordSpecCodec
+import com.classguard.app.recognition.KeywordType
+import com.classguard.app.recognition.RosterCodec
+import com.classguard.app.recognition.RosterEntry
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -11,23 +16,58 @@ data class TriggerRecord(
     val keyword: String,
     val utterance: String,
     val context: String,
+    val confidence: Double? = null,
+    val directed: Boolean = false,
 )
 
-/** 设置与历史的本地持久化（SharedPreferences + JSON，纯本地）。 */
+/** 设置、词表、名单与历史的本地持久化（SharedPreferences + JSON，纯本地）。 */
 class PrefsStore(context: Context) {
 
     private val sp: SharedPreferences =
         context.getSharedPreferences("class_sentinel_prefs", Context.MODE_PRIVATE)
 
-    var keywords: List<String>
+    // ------------------------------------------------------ 三类关键词
+
+    /**
+     * 三类关键词（核心/语境/排除）。
+     * 旧版本只有平级 `keywords` 字符串数组——首次读取时自动迁移为全 CORE。
+     */
+    var keywordSpecs: List<KeywordSpec>
         get() {
-            val raw = sp.getString(KEY_KEYWORDS, null) ?: return DEFAULT_KEYWORDS
-            return runCatching {
-                val arr = JSONArray(raw)
-                List(arr.length()) { arr.getString(it) }.filter { it.isNotBlank() }
-            }.getOrNull().takeIf { !it.isNullOrEmpty() } ?: DEFAULT_KEYWORDS
+            val raw = sp.getString(KEY_KEYWORD_SPECS, null)
+            if (raw != null) {
+                return runCatching { KeywordSpecCodec.decode(raw) }
+                    .getOrNull().takeIf { !it.isNullOrEmpty() } ?: defaultSpecs()
+            }
+            // 旧格式迁移
+            val legacy = sp.getString(KEY_KEYWORDS_LEGACY, null)
+            return if (legacy != null) {
+                runCatching {
+                    val arr = JSONArray(legacy)
+                    val words = List(arr.length()) { arr.getString(it) }.filter { it.isNotBlank() }
+                    KeywordSpecCodec.migrateFromLegacyKeywords(words)
+                }.getOrNull().takeIf { !it.isNullOrEmpty() } ?: defaultSpecs()
+            } else {
+                defaultSpecs()
+            }
         }
-        set(value) = sp.edit().putString(KEY_KEYWORDS, JSONArray(value).toString()).apply()
+        set(value) {
+            sp.edit()
+                .putString(KEY_KEYWORD_SPECS, KeywordSpecCodec.encode(value))
+                .remove(KEY_KEYWORDS_LEGACY) // 迁移完成后清除旧格式
+                .apply()
+        }
+
+    // ------------------------------------------------------ 名单
+
+    var roster: List<RosterEntry>
+        get() {
+            val raw = sp.getString(KEY_ROSTER, null) ?: return emptyList()
+            return runCatching { RosterCodec.decode(raw) }.getOrDefault(emptyList())
+        }
+        set(value) = sp.edit().putString(KEY_ROSTER, RosterCodec.encode(value)).apply()
+
+    // ------------------------------------------------------ 其他设置
 
     var cooldownMillis: Long
         get() = sp.getLong(KEY_COOLDOWN, 15_000L).coerceIn(3_000L, 120_000L)
@@ -41,6 +81,18 @@ class PrefsStore(context: Context) {
         get() = sp.getBoolean(KEY_VIBRATION, true)
         set(value) = sp.edit().putBoolean(KEY_VIBRATION, value).apply()
 
+    /** 用户是否期望监听处于运行状态（用于系统杀死后的自动恢复判定）。 */
+    var monitoringEnabled: Boolean
+        get() = sp.getBoolean(KEY_MONITORING_ENABLED, false)
+        set(value) = sp.edit().putBoolean(KEY_MONITORING_ENABLED, value).apply()
+
+    /** 模型完整性校验结果缓存（true=通过），避免每次启动重复校验 190MB 文件。 */
+    var modelIntegrityOk: Boolean
+        get() = sp.getBoolean(KEY_MODEL_INTEGRITY, false)
+        set(value) = sp.edit().putBoolean(KEY_MODEL_INTEGRITY, value).apply()
+
+    // ------------------------------------------------------ 历史
+
     fun history(): List<TriggerRecord> {
         val raw = sp.getString(KEY_HISTORY, null) ?: return emptyList()
         return runCatching {
@@ -52,6 +104,8 @@ class PrefsStore(context: Context) {
                     keyword = o.getString("kw"),
                     utterance = o.getString("u"),
                     context = o.optString("c"),
+                    confidence = if (o.has("cf")) o.getDouble("cf") else null,
+                    directed = o.optBoolean("d", false),
                 )
             }
         }.getOrDefault(emptyList())
@@ -63,13 +117,14 @@ class PrefsStore(context: Context) {
         while (list.size > MAX_HISTORY) list.removeAt(list.size - 1)
         val arr = JSONArray()
         list.forEach {
-            arr.put(
-                JSONObject()
-                    .put("t", it.timeMillis)
-                    .put("kw", it.keyword)
-                    .put("u", it.utterance)
-                    .put("c", it.context)
-            )
+            val o = JSONObject()
+                .put("t", it.timeMillis)
+                .put("kw", it.keyword)
+                .put("u", it.utterance)
+                .put("c", it.context)
+                .put("d", it.directed)
+            it.confidence?.let { cf -> o.put("cf", cf) }
+            arr.put(o)
         }
         sp.edit().putString(KEY_HISTORY, arr.toString()).apply()
     }
@@ -77,15 +132,19 @@ class PrefsStore(context: Context) {
     fun clearHistory() = sp.edit().remove(KEY_HISTORY).apply()
 
     companion object {
-        private const val KEY_KEYWORDS = "keywords"
+        private const val KEY_KEYWORD_SPECS = "keyword_specs"
+        private const val KEY_KEYWORDS_LEGACY = "keywords"
+        private const val KEY_ROSTER = "roster"
         private const val KEY_COOLDOWN = "cooldown_millis"
         private const val KEY_SOUND = "sound_enabled"
         private const val KEY_VIBRATION = "vibration_enabled"
+        private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
+        private const val KEY_MODEL_INTEGRITY = "model_integrity_ok"
         private const val KEY_HISTORY = "history"
         private const val MAX_HISTORY = 50
 
-        /** 默认关键词：短语级，降低误触发；用户可在界面增删改。 */
-        val DEFAULT_KEYWORDS = listOf(
+        /** 默认核心词：短语级点名语。 */
+        val DEFAULT_CORE = listOf(
             "叫人答题",
             "叫人回答",
             "叫个同学",
@@ -119,5 +178,20 @@ class PrefsStore(context: Context) {
             "谁能说说",
             "举手回答",
         )
+
+        /** 默认语境词：与核心词构成"出题语境 + 点名动作"的门控（从严，可一键清空退回纯核心模式）。 */
+        val DEFAULT_CONTEXT = listOf(
+            "这道题",
+            "这个问题",
+            "接下来",
+            "请问",
+            "说说",
+            "讲一下",
+            "思考一下",
+        )
+
+        fun defaultSpecs(): List<KeywordSpec> =
+            DEFAULT_CORE.map { KeywordSpec(it, KeywordType.CORE) } +
+                DEFAULT_CONTEXT.map { KeywordSpec(it, KeywordType.CONTEXT) }
     }
 }

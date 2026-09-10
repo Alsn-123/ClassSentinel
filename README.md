@@ -6,6 +6,19 @@ ClassSentinel（课堂哨兵）是一款专为高校课堂场景设计的Android
 
 **所有语音识别与逻辑处理均在设备本地完成，全程不联网、不上传任何音频数据，在实现功能的同时完全保障隐私安全。**
 
+## 📦 下载安装（普通用户推荐）
+
+无需自行编译，直接下载打包好的 APK 安装即可使用（**已内置完整离线识别模型**，开箱即用）：
+
+| 版本 | 说明 | 大小 |
+| --- | --- | --- |
+| **v1.1** | 最新版本，功能完整（推荐） | 268 MB |
+| v1.0 | 初版 | 114 MB |
+
+👉 前往 **[Releases 页面](https://github.com/Alsn-123/ClassSentinel/releases)** 下载对应 APK 安装。
+
+> **安装要求**：Android 8.0 及以上，**arm64 架构真机**（不支持 x86 模拟器）。
+
 ## 核心功能
 - 🎙️ **纯离线语音识别**：基于 sherpa-onnx 离线流式语音识别引擎，内置全量双语识别模型，所有运算本地完成，无网络依赖
 - 🔔 **关键词智能触发**：默认内置32组课堂提问常用触发词，支持自由增删自定义词表，精准匹配老师点名、提问话术
@@ -25,3 +38,23 @@ ClassSentinel（课堂哨兵）是一款专为高校课堂场景设计的Android
 - 通识课、公共选修课等低强度课堂，避免走神错过点名
 - 需要同时处理其他事务的课堂，辅助及时响应提问
 - 听力障碍、注意力不集中人群的课堂辅助工具
+
+## 🛠️ 从源码构建
+
+```bash
+git clone https://github.com/Alsn-123/ClassSentinel.git
+cd ClassSentinel
+./gradlew assembleDebug   # Windows: gradlew.bat assembleDebug
+```
+
+> ⚠️ **注意**：识别模型 `encoder-int8.onnx`（约 173 MB）超出 GitHub 单文件 100 MB 硬限制，**未纳入版本库**。
+> 从源码构建前，请先获取该模型文件并放入 `app/src/main/assets/asr-model/` 目录，
+> 否则应用可以编译通过但无法进行语音识别。若只需使用，请直接下载上方 Releases 中的 APK。
+
+```
+app/src/main/assets/asr-model/
+├── encoder-int8.onnx   ← 需自行获取（约 173 MB）
+├── decoder-int8.onnx   ← 已在仓库中
+├── joiner-int8.onnx    ← 已在仓库中
+└── tokens.txt          ← 已在仓库中
+```

@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">课堂哨兵</string>
+
+    <!-- 通知 -->
+    <string name="channel_monitoring">监听运行状态</string>
+    <string name="notif_monitoring_title">课堂哨兵监听中</string>
+    <string name="notif_monitoring_text">正在监听老师提问，请勿关闭</string>
+    <string name="notif_action_stop">停止</string>
+    <string name="channel_alerts">点名提醒</string>
+    <string name="channel_alerts_desc">识别到老师可能点名时的提醒通知</string>
+
+    <!-- 悬浮提醒 -->
+    <string name="alert_title">🔔 老师可能在点名！</string>
+    <string name="alert_context_prefix">前文：%1$s</string>
+</resources>

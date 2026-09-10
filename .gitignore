@@ -32,3 +32,8 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# 大型离线语音识别模型（约 173MB，超出 GitHub 单文件 100MB 硬限制，不纳入版本库）
+# 从源码构建前，需自行获取 encoder-int8.onnx 并放入 app/src/main/assets/asr-model/
+# 普通用户请直接下载 Releases 中的 APK（已内置完整模型）
+app/src/main/assets/asr-model/encoder-int8.onnx

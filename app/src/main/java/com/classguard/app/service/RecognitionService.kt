@@ -26,12 +26,15 @@ import com.classguard.app.ServiceBus
 import com.classguard.app.alert.AlertManager
 import com.classguard.app.data.PrefsStore
 import com.classguard.app.data.TriggerRecord
+import com.classguard.app.data.transcript.TranscriptRepository
 import com.classguard.app.recognition.Confidence
 import com.classguard.app.recognition.PinyinIndex
 import com.classguard.app.recognition.TriggerEvent
 import com.classguard.app.recognition.TriggerMatcher
 import com.classguard.app.recognition.RosterMatcher
+import com.classguard.app.tile.ClassSentinelTileService
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import kotlinx.coroutines.launch
 import kotlin.concurrent.thread
 
 /**
@@ -85,6 +88,18 @@ class RecognitionService : Service() {
     /** 界面改了词表/名单后置位，识别循环在下一帧重建 stream 使热词即时生效。 */
     @Volatile
     private var streamRebuildNeeded = false
+
+    /** 课堂转写（v2.2）：当前会话 id；null 表示本轮监听未开转写。 */
+    @Volatile
+    private var transcriptSessionId: Long? = null
+
+    /** partial 触发的关键词，等该句 final 入库时打触发标记（仅识别线程访问）。 */
+    private var pendingTriggerKeyword: String? = null
+
+    /** Room 写入域（SQLite 快速写，不影响识别主循环节奏）。 */
+    private val dbScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
 
     private lateinit var prefs: PrefsStore
 
@@ -175,9 +190,36 @@ class RecognitionService : Service() {
                 return@thread
             }
             ServiceBus.setModelLoading(false)
+            startTranscriptIfEnabled()
             recognitionLoop()
         }
         Log.i(TAG, "识别服务启动中（热词 ${hotwordsText.lines().size} 条）")
+        ClassSentinelTileService.requestUpdate(this)
+    }
+
+    /** 课堂转写（默认关）：开启时建会话。 */
+    private fun startTranscriptIfEnabled() {
+        if (!prefs.transcriptEnabled) return
+        dbScope.launch {
+            val id = runCatching {
+                TranscriptRepository.get(this@RecognitionService).startSession(System.currentTimeMillis())
+            }.getOrNull()
+            if (id != null) transcriptSessionId = id
+            Log.i(TAG, "转写会话: $id")
+        }
+    }
+
+    private fun endTranscriptSession() {
+        val sid = transcriptSessionId ?: return
+        transcriptSessionId = null
+        // onDestroy 主线程：短暂阻塞等待落库（UPDATE 单行，毫秒级）
+        runCatching {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeout(1_500) {
+                    TranscriptRepository.get(this@RecognitionService).endSession(sid, System.currentTimeMillis())
+                }
+            }
+        }
     }
 
     /** 词表/名单/冷却变化：原地更新匹配器状态（保留上下文与冷却），并标记重建热词流。 */
@@ -287,12 +329,32 @@ class RecognitionService : Service() {
 
                 if (rec.isEndpoint(stream)) {
                     val finalResult = rec.getResult(stream)
+                    val finalText = finalResult.text
                     // onFinal 内部完成"补一次匹配 + 提交上下文"，只会调用一次
-                    matcher?.onFinal(finalResult.text)
-                        ?.let { onTrigger(it, finalResult.tokens.toList(), finalResult.ysProbs) }
+                    val finalEvent = matcher?.onFinal(finalText)
+                    if (finalEvent != null) {
+                        onTrigger(finalEvent, finalResult.tokens.toList(), finalResult.ysProbs)
+                    }
                     rosterMatcher?.onFinal()
                     rec.reset(stream)
                     ServiceBus.setPartial("")
+                    // 课堂转写：本句入库（触发句带关键词标记）
+                    val sid = transcriptSessionId
+                    if (sid != null && finalText.isNotBlank()) {
+                        val kw = pendingTriggerKeyword
+                        pendingTriggerKeyword = null
+                        dbScope.launch {
+                            runCatching {
+                                TranscriptRepository.get(this@RecognitionService).addSegment(
+                                    sessionId = sid,
+                                    timeMillis = System.currentTimeMillis(),
+                                    text = finalText.trim(),
+                                    isTrigger = kw != null,
+                                    keyword = kw,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         } catch (t: Throwable) {
@@ -320,6 +382,7 @@ class RecognitionService : Service() {
     private fun onTrigger(event: TriggerEvent, tokens: List<String>, probs: FloatArray) {
         val confidence = Confidence.forKeyword(tokens, probs, TriggerMatcher.normalize(event.keyword))
         val full = event.copy(confidence = confidence)
+        pendingTriggerKeyword = event.keyword // 供该句 final 入库时打触发标记
         Log.i(
             TAG,
             "触发「${event.keyword}」directed=${event.directed} conf=${
@@ -416,6 +479,7 @@ class RecognitionService : Service() {
         starting = false
         worker?.let { w -> runCatching { w.join(1000) } }
         worker = null
+        endTranscriptSession()
         audioRecord = null
         recognizer?.release()
         recognizer = null
@@ -427,6 +491,7 @@ class RecognitionService : Service() {
         ServiceBus.setPartial("")
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         Log.i(TAG, "识别服务已停止")
+        ClassSentinelTileService.requestUpdate(this)
         super.onDestroy()
     }
 

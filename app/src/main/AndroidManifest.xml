@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 仅「实验性 AI 答题」模块使用（默认关闭、需用户显式启用）；
+         识别/触发/提醒核心链路永不联网 -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- RomGuides 一键跳转各厂商自启动管理页所需的包可见性声明（Android 11+）。
          声明仅是"可见性"，应用不会读取这些包的任何数据。 -->
@@ -41,10 +44,25 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".transcript.TranscriptActivity"
+            android:exported="false" />
+
         <service
             android:name=".service.RecognitionService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".tile.ClassSentinelTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_app_logo"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <receiver
             android:name=".service.RestartReceiver"

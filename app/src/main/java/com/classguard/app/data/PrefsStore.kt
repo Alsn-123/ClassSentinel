@@ -91,6 +91,11 @@ class PrefsStore(context: Context) {
         get() = sp.getBoolean(KEY_MODEL_INTEGRITY, false)
         set(value) = sp.edit().putBoolean(KEY_MODEL_INTEGRITY, value).apply()
 
+    /** 课堂转写开关（v2.2，默认关闭；数据仅存本机 Room）。 */
+    var transcriptEnabled: Boolean
+        get() = sp.getBoolean(KEY_TRANSCRIPT, false)
+        set(value) = sp.edit().putBoolean(KEY_TRANSCRIPT, value).apply()
+
     // ------------------------------------------------------ 历史
 
     fun history(): List<TriggerRecord> {
@@ -140,6 +145,7 @@ class PrefsStore(context: Context) {
         private const val KEY_VIBRATION = "vibration_enabled"
         private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
         private const val KEY_MODEL_INTEGRITY = "model_integrity_ok"
+        private const val KEY_TRANSCRIPT = "transcript_enabled"
         private const val KEY_HISTORY = "history"
         private const val MAX_HISTORY = 50
 

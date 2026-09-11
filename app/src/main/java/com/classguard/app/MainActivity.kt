@@ -2,6 +2,7 @@ package com.classguard.app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -64,7 +65,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import android.widget.Toast
 import com.classguard.app.alert.AlertManager
+import com.classguard.app.ai.AiConfigStore
+import com.classguard.app.ai.OpenAiCompatibleProvider
+import com.classguard.app.crash.CrashReporter
 import com.classguard.app.data.PrefsStore
 import com.classguard.app.data.TriggerRecord
 import com.classguard.app.recognition.KeywordSpec
@@ -73,6 +78,8 @@ import com.classguard.app.recognition.RosterCodec
 import com.classguard.app.recognition.TriggerEvent
 import com.classguard.app.selftest.SelfTest
 import com.classguard.app.service.RecognitionService
+import com.classguard.app.tile.ClassSentinelTileService
+import com.classguard.app.transcript.TranscriptActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -88,6 +95,12 @@ class MainActivity : ComponentActivity() {
     /** onResume 时 +1，驱动界面重新读取权限状态。 */
     val permissionTick = mutableIntStateOf(0)
 
+    /** 磁贴点击的"自动开始监听"请求。 */
+    private var pendingAutoStart = false
+
+    /** 上次异常退出的崩溃报告（界面弹窗展示后清除）。 */
+    var pendingCrashReport: String? by mutableStateOf(null)
+
     private val micPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startMonitoring()
@@ -98,14 +111,35 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReporter.install(this)
         prefs = PrefsStore(this)
         AlertManager.createAlertChannel(this)
+        maybeAutoStart(intent)
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     AppScreen(activity = this)
                 }
             }
+        }
+        pendingCrashReport = runCatching {
+            CrashReporter.pendingCrashFiles(this).firstOrNull()?.readText()
+        }.getOrNull()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        maybeAutoStart(intent)
+    }
+
+    /** 快捷磁贴降级路径：拉起主界面后自动开始监听。 */
+    private fun maybeAutoStart(intent: Intent?) {
+        if (intent?.getBooleanExtra(ClassSentinelTileService.EXTRA_AUTO_START, false) == true) {
+            pendingAutoStart = true
+        }
+        if (pendingAutoStart && !ServiceBus.running.value) {
+            pendingAutoStart = false
+            if (hasMicPermission()) startMonitoring()
         }
     }
 
@@ -242,6 +276,17 @@ fun AppScreen(activity: MainActivity) {
     var showImportDialog by remember { mutableStateOf(false) }
     var selfTestRunning by remember { mutableStateOf(false) }
     var selfTestResult by remember { mutableStateOf<String?>(null) }
+
+    var transcriptOn by remember { mutableStateOf(prefs.transcriptEnabled) }
+    var showExperimental by remember { mutableStateOf(false) }
+    val aiStore = remember { AiConfigStore(activity) }
+    val aiInitial = remember { aiStore.load() }
+    var aiEnabled by remember { mutableStateOf(aiInitial.enabled) }
+    var aiBaseUrl by remember { mutableStateOf(aiInitial.baseUrl) }
+    var aiModel by remember { mutableStateOf(aiInitial.model) }
+    var aiKey by remember { mutableStateOf("") }
+    var aiTesting by remember { mutableStateOf(false) }
+    var aiTestResult by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(historyVersion) { history = prefs.history() }
 
@@ -420,6 +465,30 @@ fun AppScreen(activity: MainActivity) {
             }
         }
 
+        // 课堂记录（v2.2 转写）
+        SectionCard("课堂记录（转写）") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("转写课堂内容", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        "把识别到的每句话存到本机，可回看/复制/分享；触发提醒的句子会标 ▶。默认关闭。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = transcriptOn, onCheckedChange = {
+                    transcriptOn = it
+                    prefs.transcriptEnabled = it
+                })
+            }
+            TextButton(onClick = { activity.startActivity(Intent(activity, TranscriptActivity::class.java)) }) {
+                Text("查看课堂记录")
+            }
+        }
+
         // 三类关键词
         SectionCard("触发关键词") {
             Text(
@@ -580,6 +649,80 @@ fun AppScreen(activity: MainActivity) {
             TipLine("建议上课时插电，持续识别有一定耗电。")
             romSteps.forEach { TipLine(it) }
             TipLine("低置信度命中只发轻量通知，避免识别错字造成的误提醒打扰。")
+            TipLine("下拉快捷面板可把「课堂哨兵」磁贴加到首页，一键开/关监听。")
+        }
+
+        // 实验功能（v2.2 AI 口子：默认折叠、默认关闭）
+        TextButton(onClick = { showExperimental = !showExperimental }) {
+            Text(if (showExperimental) "收起实验功能" else "实验功能 ▾", fontSize = 12.sp)
+        }
+        if (showExperimental) {
+            SectionCard("实验性 · AI 答题口子") {
+                Text(
+                    "默认关闭。核心识别链路永不联网；仅当你在此显式启用并配置自己的接口后，" +
+                        "对应模块才会发起网络请求。接口需兼容 OpenAI /chat/completions。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SettingSwitch("启用（当前版本无任何自动调用）", aiEnabled) { aiEnabled = it }
+                OutlinedTextField(
+                    value = aiBaseUrl,
+                    onValueChange = { aiBaseUrl = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("接口地址，如 https://api.example.com/v1") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = aiModel,
+                    onValueChange = { aiModel = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("模型名，如 gpt-4o-mini") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = aiKey,
+                    onValueChange = { aiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("API Key（Keystore 加密保存；留空保留旧值）") },
+                    singleLine = true,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        aiStore.save(
+                            com.classguard.app.ai.AiConfig(
+                                enabled = aiEnabled,
+                                baseUrl = aiBaseUrl,
+                                model = aiModel,
+                                apiKeyCipher = aiInitial.apiKeyCipher,
+                            ),
+                            plainApiKey = aiKey.takeIf { it.isNotBlank() },
+                        )
+                        Toast.makeText(activity, "已保存（Key 已加密）", Toast.LENGTH_SHORT).show()
+                    }) { Text("保存") }
+                    TextButton(
+                        enabled = !aiTesting && aiBaseUrl.isNotBlank(),
+                        onClick = {
+                            aiTesting = true
+                            activity.lifecycleScope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    val cfg = aiStore.load()
+                                    val key = aiStore.plainApiKey(cfg) ?: ""
+                                    OpenAiCompatibleProvider(cfg.baseUrl, key, cfg.model.ifBlank { "gpt-4o-mini" })
+                                        .answer("回复：OK")
+                                }
+                                aiTesting = false
+                                aiTestResult = result.fold(
+                                    onSuccess = { "连接成功：${it.take(50)}" },
+                                    onFailure = { "失败：${it.message?.take(120)}" },
+                                )
+                            }
+                        },
+                    ) { Text(if (aiTesting) "测试中…" else "测试连接") }
+                }
+                aiTestResult?.let {
+                    Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
 
         Spacer(Modifier.height(24.dp))
@@ -632,6 +775,37 @@ fun AppScreen(activity: MainActivity) {
                         .height(320.dp)
                         .verticalScroll(rememberScrollState())
                 ) { Text(text, fontSize = 13.sp) }
+            },
+        )
+    }
+
+    // 崩溃捕获（v2.2）：上次异常退出的本机日志
+    activity.pendingCrashReport?.let { report ->
+        AlertDialog(
+            onDismissRequest = {
+                activity.pendingCrashReport = null
+                CrashReporter.clearAll(activity)
+            },
+            title = { Text("检测到上次异常退出") },
+            text = {
+                Text(
+                    "已在本机生成崩溃日志（不含识别内容）。可复制以供反馈，复制后日志将被清除。",
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", report))
+                    CrashReporter.clearAll(activity)
+                    activity.pendingCrashReport = null
+                }) { Text("复制并清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    CrashReporter.clearAll(activity)
+                    activity.pendingCrashReport = null
+                }) { Text("忽略") }
             },
         )
     }

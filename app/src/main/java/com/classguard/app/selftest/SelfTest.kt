@@ -60,6 +60,17 @@ object SelfTest {
                 .getOrElse { return SectionResult(name, emptyList(), emptyList(), "读取测试音频失败: ${it.message}") }
             if (pcm.isEmpty()) return SectionResult(name, emptyList(), emptyList(), "测试音频为空")
 
+            // 转写开启时，自测音频同样入库（debug 演示/验证转写闭环）
+            val transcriptRepo = if (prefs.transcriptEnabled) {
+                com.classguard.app.data.transcript.TranscriptRepository.get(context)
+            } else null
+            var sessionId: Long? = null
+            if (transcriptRepo != null) {
+                sessionId = kotlinx.coroutines.runBlocking {
+                    runCatching { transcriptRepo.startSession(System.currentTimeMillis()) }.getOrNull()
+                }
+            }
+
             val rec: OnlineRecognizer = AsrEngine.createRecognizer(context)
             val stream = rec.createStream(AsrEngine.buildHotwordsText(prefs.keywordSpecs, prefs.roster))
             val matcher = TriggerMatcher(prefs.keywordSpecs, baseCooldownMillis = prefs.cooldownMillis)
@@ -70,6 +81,7 @@ object SelfTest {
             )
             val finals = ArrayList<String>()
             val triggers = ArrayList<TriggerEvent>()
+            var pendingTriggerKeyword: String? = null
             val chunk = 1600 // 100ms
             var offset = 0
             while (offset < pcm.size) {
@@ -92,6 +104,7 @@ object SelfTest {
                         val conf = Confidence.forKeyword(
                             result.tokens.toList(), result.ysProbs, TriggerMatcher.normalize(it.keyword)
                         )
+                        pendingTriggerKeyword = it.keyword
                         Log.i(TAG, "自测触发: ${it.keyword} conf=${conf ?: "n/a"}")
                         triggers.add(it.copy(confidence = conf))
                     }
@@ -100,11 +113,33 @@ object SelfTest {
                     val finalText = rec.getResult(stream).text
                     if (finalText.isNotBlank()) finals.add(finalText)
                     matcher.onFinal(finalText)?.let {
+                        pendingTriggerKeyword = it.keyword
                         Log.i(TAG, "自测触发(final): ${it.keyword}")
                         triggers.add(it)
                     }
                     rosterMatcher.onFinal()
                     rec.reset(stream)
+                    val sid = sessionId
+                    if (sid != null && finalText.isNotBlank()) {
+                        val kw = pendingTriggerKeyword
+                        kotlinx.coroutines.runBlocking {
+                            runCatching {
+                                transcriptRepo?.addSegment(
+                                    sessionId = sid,
+                                    timeMillis = System.currentTimeMillis(),
+                                    text = finalText.trim(),
+                                    isTrigger = kw != null,
+                                    keyword = kw,
+                                )
+                            }
+                        }
+                        pendingTriggerKeyword = null
+                    }
+                }
+            }
+            if (sessionId != null && transcriptRepo != null) {
+                kotlinx.coroutines.runBlocking {
+                    runCatching { transcriptRepo.endSession(sessionId, System.currentTimeMillis()) }
                 }
             }
             SectionResult(name, finals, triggers)

@@ -21,4 +21,8 @@
     <string name="error_mic_init">麦克风初始化失败，可能被其他应用占用</string>
     <string name="recover_notif_title">课堂哨兵已退出</string>
     <string name="recover_notif_text">点按此处回到应用，恢复课堂监听</string>
+
+    <!-- 磁贴 -->
+    <string name="tile_on">监听中</string>
+    <string name="tile_off">已停止</string>
 </resources>

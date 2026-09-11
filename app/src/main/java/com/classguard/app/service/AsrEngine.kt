@@ -43,7 +43,10 @@ object AsrEngine {
      * 声学相近时优先输出词表里的名字，比事后纠错更有效（纠错只是兜底）。
      * 过高（>5）会压制声学证据、把无关语句硬拉成热词，故取 3.5。
      */
-    private const val HOTWORDS_SCORE = 3.5f
+    /** 默认热词偏置分（自测三方对照与线上共用）。 */
+    const val DEFAULT_HOTWORDS_SCORE = 3.5f
+
+    private const val HOTWORDS_SCORE = DEFAULT_HOTWORDS_SCORE
 
     // 端点检测参数（针对老师讲课停顿多的远场场景调优；改动需真机 A/B）：
     // rule2 从 0.8s 放宽到 1.2s、最小语句 2.4s→3.0s：减少"中途停顿被误判为句末"
@@ -69,7 +72,11 @@ object AsrEngine {
             .joinToString("\n") { it.toCharArray().joinToString(" ") }
     }
 
-    fun createRecognizer(context: Context): OnlineRecognizer =
+    fun createRecognizer(
+        context: Context,
+        hotwordsScore: Float = HOTWORDS_SCORE,
+        maxActivePaths: Int = 4,
+    ): OnlineRecognizer =
         OnlineRecognizer(
             assetManager = context.assets,
             config = OnlineRecognizerConfig(
@@ -108,8 +115,8 @@ object AsrEngine {
                 ),
                 // 热词偏置要求 modified_beam_search；分数作用于 createStream 传入的热词
                 decodingMethod = "modified_beam_search",
-                maxActivePaths = 4,
-                hotwordsScore = HOTWORDS_SCORE,
+                maxActivePaths = maxActivePaths,
+                hotwordsScore = hotwordsScore,
             ),
         )
 

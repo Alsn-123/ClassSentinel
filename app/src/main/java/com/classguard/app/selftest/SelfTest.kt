@@ -5,7 +5,10 @@ import android.content.res.AssetManager
 import android.util.Log
 import com.classguard.app.data.PrefsStore
 import com.classguard.app.recognition.Confidence
+import com.classguard.app.recognition.KeywordSpec
+import com.classguard.app.recognition.KeywordType
 import com.classguard.app.recognition.PinyinIndex
+import com.classguard.app.recognition.RosterEntry
 import com.classguard.app.recognition.RosterMatcher
 import com.classguard.app.recognition.TextRepair
 import com.classguard.app.recognition.TriggerEvent
@@ -26,6 +29,10 @@ object SelfTest {
     private const val TAG = "SelfTest"
     const val TEST_WAV = "test/tts_test.wav"
     const val MODEL_SAMPLE_WAV = "test/model_sample.wav"
+    const val NAME_TEST_WAV = "test/name_test.wav"
+
+    /** 姓名识别探针用的固定名单与词表（与用户配置无关，保证结果可对比）。 */
+    private const val PROBE_NAME = "阳一真"
 
     data class SectionResult(
         val name: String,
@@ -52,7 +59,93 @@ object SelfTest {
                 results.add(runOne(context, prefs, path, name))
             }
         }
+        if (hasAsset(context.assets, NAME_TEST_WAV)) {
+            results.add(runNameProbe(context))
+        }
         return results
+    }
+
+    /**
+     * 姓名识别探针：同一段含姓名的语音跑两遍——一次带热词偏置、一次不带，
+     * 直接量化热词对姓名识别的作用（也用于回归"换配置后是否退化"）。
+     *
+     * 用固定名单而非用户名单：结果与用户配置无关，便于横向对比。
+     */
+    private fun runNameProbe(context: Context): SectionResult {
+        val name = "姓名识别探针（$PROBE_NAME，带/不带热词对比）"
+        return try {
+            val pcm = runCatching { readWavAsMono16k(context.assets, NAME_TEST_WAV) }
+                .getOrElse { return SectionResult(name, emptyList(), emptyList(), "读取音频失败: ${it.message}") }
+            if (pcm.isEmpty()) return SectionResult(name, emptyList(), emptyList(), "测试音频为空")
+
+            val roster = listOf(RosterEntry(PROBE_NAME, isMe = true))
+            val specs = listOf(
+                KeywordSpec("回答一下", KeywordType.CORE),
+                KeywordSpec("找个同学", KeywordType.CORE),
+            )
+            val pinyin = PinyinIndex.holder(context)
+
+            fun recognize(hotwords: String, score: Float = AsrEngine.DEFAULT_HOTWORDS_SCORE): String {
+                val rec = AsrEngine.createRecognizer(context, hotwordsScore = score)
+                val stream = rec.createStream(hotwords)
+                val sb = StringBuilder()
+                var offset = 0
+                val chunk = 1600
+                while (offset < pcm.size) {
+                    val end = minOf(offset + chunk, pcm.size)
+                    stream.acceptWaveform(pcm.copyOfRange(offset, end), 16000)
+                    offset = end
+                    while (rec.isReady(stream)) rec.decode(stream)
+                    if (rec.isEndpoint(stream)) {
+                        val t = rec.getResult(stream).text
+                        if (t.isNotBlank()) sb.append(TextRepair.clean(t))
+                        rec.reset(stream)
+                    }
+                }
+                val tail = TextRepair.clean(rec.getResult(stream).text)
+                if (tail.isNotBlank()) sb.append(tail)
+                rec.release()
+                return sb.toString()
+            }
+
+            val hotText = AsrEngine.buildHotwordsText(specs, roster)
+            val withoutHot = recognize("")
+            val withHot = recognize(hotText)
+            // 决定性对照：把偏置分拉高到 4 倍。若输出与默认分完全一致，说明热词没有真正
+            // 作用于解码（encoding 失败或参数未生效），需要改配置而不是继续调分数。
+            val withHotStrong = recognize(hotText, score = 14f)
+
+            // 用与线上一致的匹配链路判断姓名是否命中
+            val rosterMatcher = RosterMatcher(
+                roster, specs, baseCooldownMillis = 15_000, pinyin = pinyin
+            )
+            val triggers = ArrayList<TriggerEvent>()
+            rosterMatcher.onPartial(withHot, "")?.let { triggers.add(it) }
+
+            val hit = triggers.isNotEmpty()
+            val hotActive = withHot != withHotStrong
+            val summary = buildString {
+                append("无热词：").append(withoutHot.ifBlank { "（无）" })
+                append('\n').append("热词 3.5：").append(withHot.ifBlank { "（无）" })
+                append('\n').append("热词 14：").append(withHotStrong.ifBlank { "（无）" })
+                append('\n').append(
+                    if (hotActive) {
+                        "→ 热词已作用于解码。注意：人名多为低频字组合（如「臻」），" +
+                            "模型可能只给出同音字（「真」「珍」）——读音对了即属识别正确，" +
+                            "字形由名单读音纠偏写回真名。"
+                    } else {
+                        "→ ⚠ 改偏置分输出无变化：热词未生效，需检查热词编码/模型词表"
+                    }
+                )
+                append('\n').append(
+                    if (hit) "✓ 姓名命中触发（读音层纠偏生效）" else "✗ 姓名未命中"
+                )
+            }
+            SectionResult(name, listOf(summary), triggers)
+        } catch (t: Throwable) {
+            Log.e(TAG, "姓名探针失败", t)
+            SectionResult(name, emptyList(), emptyList(), "姓名探针失败: ${t.message}")
+        }
     }
 
     private fun runOne(context: Context, prefs: PrefsStore, path: String, name: String): SectionResult {

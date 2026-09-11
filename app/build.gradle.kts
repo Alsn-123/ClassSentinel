@@ -1,8 +1,17 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+// Release 签名：口令与 keystore 路径放在项目根 keystore.properties（不入库）。
+// 文件缺失时 release 构建回退为未签名（保证 CI 与其他机器仍可 assembleDebug）。
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -22,9 +31,26 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val path = keystoreProps.getProperty("storeFile")
+            if (path != null) {
+                storeFile = rootProject.file(path)
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 模型与 sherpa-onnx 依赖反射/native，关闭混淆避免破坏识别链路
+            isShrinkResources = false
+            if (keystoreProps.getProperty("storeFile") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     buildFeatures {

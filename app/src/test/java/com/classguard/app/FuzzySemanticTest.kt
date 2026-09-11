@@ -274,6 +274,36 @@ class FuzzySemanticTest {
         assertFalse(Confidence.shouldFullAlert(c, 2))
     }
 
+    @Test
+    fun `名单_repairNames 把 final 句中的畸变写回真名`() {
+        // 触发判定跑在 partial 上，转写存的是更完整的 final；repairNames 要对 final 再纠偏一次
+        val roster = listOf(RosterEntry("阳一真", isMe = true))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2())
+        // 近似音（丽 li ↔ 易 yi）与同音（珍/臻 zhen）都应写回
+        assertEquals("这道题请阳一真来说", m.repairNames("这道题请阳丽真来说"))
+        assertEquals("阳一真", m.repairNames("阳易真"))
+        // 无关句原样返回
+        assertEquals("今天天气不错", m.repairNames("今天天气不错"))
+    }
+
+    @Test
+    fun `名单_repairNames 不改触发状态`() {
+        // 修复文本不应消耗冷却或置位"同句已触发"，否则会吞掉真正的触发
+        val roster = listOf(RosterEntry("阳一真", isMe = true))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2())
+        m.repairNames("阳丽真")
+        assertNotNull(m.onPartial("这道题请阳丽真来说", "")) // 仍能正常触发
+    }
+
+    private fun index2() = PinyinIndex.fromMap(
+        mapOf(
+            "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+            "丽" to setOf("li"), "珍" to setOf("zen"), "来" to setOf("lai"),
+            "说" to setOf("suo"), "今" to setOf("jin"), "天" to setOf("tian"),
+            "气" to setOf("qi"), "不" to setOf("bu"), "错" to setOf("cuo"),
+        )
+    )
+
     // ------------------------------------------------------------ 置信度惩罚
 
     @Test

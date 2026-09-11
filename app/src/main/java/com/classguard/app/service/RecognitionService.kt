@@ -324,8 +324,9 @@ class RecognitionService : Service() {
                 val result = rec.getResult(stream)
                 val partial = result.text
                 if (partial.isNotEmpty()) {
-                    // 展示层折叠解码卡顿（"定定定定理"→"定理"），匹配层在 normalize 内同样折叠
-                    ServiceBus.setPartial(TextRepair.collapseStutter(partial))
+                    // 展示层与入库同口径：姓名写回真名 + 折叠卡顿 + 过滤英文碎片，
+                    // 避免实时字幕里出现"阳丽真ED铮珍M"这类识别畸变
+                    ServiceBus.setPartial(cleanForRecord(partial))
                     pickEvent(partial, matcherContext = matcher?.contextSnapshot().orEmpty())
                         ?.let { onTrigger(it, result.tokens.toList(), result.ysProbs) }
                 }
@@ -341,20 +342,25 @@ class RecognitionService : Service() {
                     rosterMatcher?.onFinal()
                     rec.reset(stream)
                     ServiceBus.setPartial("")
-                    // 课堂转写：本句入库（触发句带关键词标记）
+                    // 课堂转写：本句入库（触发句带关键词标记）。
+                    // fix: 姓名畸变写回真名 + 清理卡顿/英文碎片——触发判定跑在 partial 上，
+                    // 若直接存 final 原文，记录里看到的仍是"阳丽真"这类识别错字
                     val sid = transcriptSessionId
                     if (sid != null && finalText.isNotBlank()) {
                         val kw = pendingTriggerKeyword
                         pendingTriggerKeyword = null
-                        dbScope.launch {
-                            runCatching {
-                                TranscriptRepository.get(this@RecognitionService).addSegment(
-                                    sessionId = sid,
-                                    timeMillis = System.currentTimeMillis(),
-                                    text = TextRepair.collapseStutter(finalText.trim()),
-                                    isTrigger = kw != null,
-                                    keyword = kw,
-                                )
+                        val cleanText = cleanForRecord(finalText)
+                        if (cleanText.isNotBlank()) {
+                            dbScope.launch {
+                                runCatching {
+                                    TranscriptRepository.get(this@RecognitionService).addSegment(
+                                        sessionId = sid,
+                                        timeMillis = System.currentTimeMillis(),
+                                        text = cleanText,
+                                        isTrigger = kw != null,
+                                        keyword = kw,
+                                    )
+                                }
                             }
                         }
                     }
@@ -381,16 +387,23 @@ class RecognitionService : Service() {
         ).firstOrNull()
     }
 
+    /**
+     * 入库/展示前的整句清理：先把姓名畸变写回真名，再折叠卡顿、过滤英文碎片。
+     * 两处都需要清洗的场景（转写、历史）统一走这里，避免各处口径不一致。
+     */
+    private fun cleanForRecord(text: String): String =
+        TextRepair.clean(rosterMatcher?.repairNames(text) ?: text).trim()
+
     /** 日志脱敏：只记录关键词与句长，不落完整识别文本与用户词表。 */
     private fun onTrigger(event: TriggerEvent, tokens: List<String>, probs: FloatArray) {
         val confidence = Confidence.withFuzzyPenalty(
             Confidence.forKeyword(tokens, probs, TriggerMatcher.normalize(event.keyword)),
             event.fuzzyEdits,
         )
-        // 历史与提醒横幅同样展示修复后的文本（同音纠偏 + 卡顿折叠）
+        // 历史与提醒横幅同样展示修复后的文本（姓名写回 + 卡顿折叠 + 英文碎片过滤）
         val full = event.copy(
             confidence = confidence,
-            utterance = TextRepair.collapseStutter(event.utterance),
+            utterance = cleanForRecord(event.utterance),
         )
         pendingTriggerKeyword = event.keyword // 供该句 final 入库时打触发标记
         Log.i(

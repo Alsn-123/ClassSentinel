@@ -31,6 +31,38 @@ object TextRepair {
         '人', '天', '年', '日', '月', '家', '户', '村', '乡',
     )
 
+    /**
+     * 展示/入库前的整句清理（v2.3）：卡顿折叠 + 英文碎片过滤。
+     *
+     * 英文碎片从哪来：内置的是中英双语模型（词表含 ▁FI/ANCE/Y 等 BPE 碎片），
+     * 远场或口音下会把中文音节"听成"英文单词——实测记录里出现的
+     * INANCE(FINANCE)、NDELIEVE(BELIEVE)、MILE、ED、CE、M 全是噪声。
+     * 中文课堂场景下这些几乎不可能是有效内容，故默认过滤，让记录可读。
+     */
+    fun clean(text: String): String = stripLatinFragments(collapseStutter(text))
+
+    /**
+     * 去掉拉丁字母片段（含其后的空格）。纯英文句（如整句都是英文）会被清空——
+     * 本工具面向中文课堂，这是刻意的取舍。
+     */
+    fun stripLatinFragments(text: String): String {
+        if (text.none { it in 'a'..'z' || it in 'A'..'Z' }) return text
+        val sb = StringBuilder(text.length)
+        var i = 0
+        while (i < text.length) {
+            val ch = text[i]
+            if (ch in 'a'..'z' || ch in 'A'..'Z') {
+                // 跳过整段拉丁，并吞掉紧随其后的一个空格（避免留下双空格）
+                while (i < text.length && (text[i] in 'a'..'z' || text[i] in 'A'..'Z')) i++
+                if (i < text.length && text[i] == ' ') i++
+                continue
+            }
+            sb.append(ch)
+            i++
+        }
+        return sb.toString().trim()
+    }
+
     fun collapseStutter(text: String): String {
         if (text.length < 2) return text
 

@@ -78,6 +78,38 @@ class RosterMatcher(
 
     // ------------------------------------------------------------ 内部
 
+    /** 命中结果（不含冷却/触发状态），供触发判定与文本修复共用。 */
+    private class Located(
+        val entry: RosterEntry,
+        val spanStart: Int,
+        val spanEnd: Int,
+        val fuzzyEdits: Int,
+    )
+
+    /**
+     * 定位名单命中：精确变体优先，其次拼音模糊（同音/近音 + 单字展开容错）；
+     * 多命中时优先"我的名字"，其后按纠偏次数最少（最可能是真名字）。
+     */
+    private fun locate(norm: String): Located? {
+        if (norm.isEmpty()) return null
+        val n = names
+        val exact = n.variants.filter { (v, _) -> norm.contains(v) }
+        val exactHit = exact.firstOrNull { it.second.isMe } ?: exact.firstOrNull()
+        if (exactHit != null) {
+            val start = norm.indexOf(exactHit.first)
+            return Located(exactHit.second, start, start + exactHit.first.length - 1, 0)
+        }
+        if (pinyin == null) return null
+        val fuzzy = n.fuzzy.mapNotNull { (t, e) ->
+            pinyin.findAlignedMatch(t, norm)
+                ?.takeIf { accepted(t.length, it) }
+                ?.let { Triple(e, it, it.insertions + it.substitutions) }
+        }
+        val matched = fuzzy.firstOrNull { it.first.isMe } ?: fuzzy.minByOrNull { it.third }
+            ?: return null
+        return Located(matched.first, matched.second.offset, matched.second.end, matched.third)
+    }
+
     private fun check(
         norm: String,
         rawUtterance: String,
@@ -96,54 +128,47 @@ class RosterMatcher(
             if (n.context.none { window.contains(it) }) return null
         }
 
-        // 3. 姓名命中：精确变体优先，其次拼音模糊（同音/近音 + 单字展开容错）；
-        //    多命中时优先"我的名字"，其后按纠偏次数最少（最可能是真名字）
-        val exact = n.variants.filter { (v, _) -> norm.contains(v) }
-        var entry: RosterEntry? = null
-        var spanStart = -1
-        var spanEnd = -1
-        var fuzzyEdits = 0
-        val exactHit = exact.firstOrNull { it.second.isMe } ?: exact.firstOrNull()
-        if (exactHit != null) {
-            entry = exactHit.second
-            spanStart = norm.indexOf(exactHit.first)
-            spanEnd = spanStart + exactHit.first.length - 1
-        }
-        if (entry == null && pinyin != null) {
-            val fuzzy = n.fuzzy.mapNotNull { (t, e) ->
-                pinyin.findAlignedMatch(t, norm)
-                    ?.takeIf { accepted(t.length, it) }
-                    ?.let { Triple(e, it, it.insertions + it.substitutions) }
-            }
-            val matched = fuzzy.firstOrNull { it.first.isMe } ?: fuzzy.minByOrNull { it.third }
-            if (matched != null) {
-                entry = matched.first
-                spanStart = matched.second.offset
-                spanEnd = matched.second.end
-                fuzzyEdits = matched.third
-            }
-        }
-        val matchedEntry = entry ?: return null
+        // 3. 姓名命中
+        val hit = locate(norm) ?: return null
 
         val now = clock()
         val cooldown = ROSTER_COOLDOWN_FACTOR * TriggerMatcher.cooldownMillisFor(
-            TriggerMatcher.normalize(matchedEntry.displayName).length, baseCooldownMillis
+            TriggerMatcher.normalize(hit.entry.displayName).length, baseCooldownMillis
         )
-        val last = lastTriggerAt[matchedEntry.displayName]
+        val last = lastTriggerAt[hit.entry.displayName]
         if (last != null && now - last < cooldown) return null
-        lastTriggerAt[matchedEntry.displayName] = now
+        lastTriggerAt[hit.entry.displayName] = now
         utteranceTriggered = true
 
         return TriggerEvent(
             timeMillis = now,
-            keyword = matchedEntry.displayName,
+            keyword = hit.entry.displayName,
             // 语义修复：把命中区间（同音错字/插字/卡顿连字）整段写回为正确姓名，
             // 转写与提醒里看到的就是真名而不是"章三""张张伟"这类识别畸变
-            utterance = repairSpan(rawUtterance, normToRaw, spanStart, spanEnd, matchedEntry.displayName).trim(),
+            utterance = repairSpan(
+                rawUtterance, normToRaw, hit.spanStart, hit.spanEnd, hit.entry.displayName
+            ).trim(),
             context = contextText.trim(),
-            directed = matchedEntry.isMe,
-            fuzzyEdits = fuzzyEdits,
+            directed = hit.entry.isMe,
+            fuzzyEdits = hit.fuzzyEdits,
         )
+    }
+
+    /**
+     * 把整句里的姓名畸变写回真名（v2.3，不改触发状态与冷却）。
+     *
+     * 触发判定跑在 partial 上，而结束时的 final 文本更完整；转写若直接存 final，
+     * 用户看到的就还是「阳丽真」这类识别错字。本方法对 final 重新定位并写回，
+     * 让课堂记录里显示的是真名。
+     */
+    @Synchronized
+    fun repairNames(utterance: String): String {
+        if (utterance.isBlank()) return utterance
+        val (norm, normToRaw) = TriggerMatcher.normalizeWithMap(utterance)
+        val n = names
+        if (norm.isEmpty() || n.exclude.any { norm.contains(it) }) return utterance
+        val hit = locate(norm) ?: return utterance
+        return repairSpan(utterance, normToRaw, hit.spanStart, hit.spanEnd, hit.entry.displayName)
     }
 
     /** 用归一化下标映射把 [start]..[end]（闭区间）对应的原文字区间替换为 [replacement]；映射越界时原样返回。 */

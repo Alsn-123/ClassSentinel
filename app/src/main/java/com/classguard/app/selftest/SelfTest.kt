@@ -123,7 +123,9 @@ object SelfTest {
                 }
                 if (rec.isEndpoint(stream)) {
                     val finalText = rec.getResult(stream).text
-                    if (finalText.isNotBlank()) finals.add(TextRepair.collapseStutter(finalText))
+                    if (finalText.isNotBlank()) {
+                        finals.add(TextRepair.clean(rosterMatcher.repairNames(finalText)).trim())
+                    }
                     matcher.onFinal(finalText)?.let {
                         pendingTriggerKeyword = it.keyword
                         Log.i(TAG, "自测触发(final): ${it.keyword}")
@@ -139,7 +141,7 @@ object SelfTest {
                                 transcriptRepo?.addSegment(
                                     sessionId = sid,
                                     timeMillis = System.currentTimeMillis(),
-                                    text = TextRepair.collapseStutter(finalText.trim()),
+                                    text = TextRepair.clean(rosterMatcher.repairNames(finalText)).trim(),
                                     isTrigger = kw != null,
                                     keyword = kw,
                                 )

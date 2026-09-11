@@ -64,6 +64,35 @@ class TextRepairTest {
     }
 
     @Test
+    fun `清理_过滤英文碎片（双语模型误识）`() {
+        // 真实记录：阳一真 被双语模型识别成带英文碎片的乱码；只剥拉丁，中文原样保留
+        assertEquals("杨丽", TextRepair.clean("杨丽NDH"))
+        assertEquals("阳易壹佰懿珍真", TextRepair.clean("阳易壹佰懿CEBOK珍MY真"))
+        assertEquals("阳义丽唻珍珍", TextRepair.clean("阳义丽唻珍ED珍M"))
+        assertEquals("阳一真 阳易壹懿珍", TextRepair.clean("阳一真 阳易壹懿珍MILE"))
+        assertEquals("回答一下", TextRepair.clean("回答一下 M"))
+        assertEquals("张某亦宜春一者你", TextRepair.clean("张某亦宜春一者你"))
+        assertEquals("洋溢利息抑郁期", TextRepair.clean("洋溢利息抑郁期INANCE"))
+        // 纯英文句会被清空（本工具面向中文课堂，刻意取舍）
+        assertEquals("", TextRepair.clean("IMPORTANT"))
+    }
+
+    @Test
+    fun `清理_先折叠卡顿再过滤英文`() {
+        assertEquals("动能定理", TextRepair.clean("动能定定定理MILE"))
+        assertEquals("我来回答", TextRepair.clean("我我我来回答ANCE"))
+        // 中英混合且英文在句中：吞掉拉丁与紧随其后的一个空格
+        assertEquals("阳丽真铮珍", TextRepair.clean("阳丽真ED铮珍M"))
+    }
+
+    @Test
+    fun `过滤英文_保留中文与数字`() {
+        assertEquals("第3题", TextRepair.stripLatinFragments("第3题ABC"))
+        assertEquals("回答一下", TextRepair.stripLatinFragments("回答一下"))
+        assertEquals("", TextRepair.stripLatinFragments("ABC"))
+    }
+
+    @Test
     fun `模拟真实自测句`() {
         // 模拟器自测 TTS 音频的实际识别输出。
         // "请问请请"：问后的"请请"两连折叠为单"请"，剩"请问请"（连字折叠规则使然）

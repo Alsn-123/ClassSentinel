@@ -64,8 +64,8 @@ class TextRepairTest {
     }
 
     @Test
-    fun `清理_过滤英文碎片（双语模型误识）`() {
-        // 真实记录：阳一真 被双语模型识别成带英文碎片的乱码；只剥拉丁，中文原样保留
+    fun `清理_过滤粘连型英文噪声（双语模型误识）`() {
+        // 真实记录：碎片总是直接粘在汉字上；只剥粘连片段，中文原样保留
         assertEquals("杨丽", TextRepair.clean("杨丽NDH"))
         assertEquals("阳易壹佰懿珍真", TextRepair.clean("阳易壹佰懿CEBOK珍MY真"))
         assertEquals("阳义丽唻珍珍", TextRepair.clean("阳义丽唻珍ED珍M"))
@@ -73,23 +73,31 @@ class TextRepairTest {
         assertEquals("回答一下", TextRepair.clean("回答一下 M"))
         assertEquals("张某亦宜春一者你", TextRepair.clean("张某亦宜春一者你"))
         assertEquals("洋溢利息抑郁期", TextRepair.clean("洋溢利息抑郁期INANCE"))
-        // 纯英文句会被清空（本工具面向中文课堂，刻意取舍）
-        assertEquals("", TextRepair.clean("IMPORTANT"))
+    }
+
+    @Test
+    fun `清理_保留空格分隔的正常英文词`() {
+        // 回归：官方样例的 MONDAY 是真实内容，不能被当噪声删掉
+        assertEquals("昨天天是 MONDAY", TextRepair.clean("昨天天是 MONDAY"))
+        assertEquals("今天学 IMPORTANT 这个词", TextRepair.clean("今天学 IMPORTANT 这个词"))
+        // 但粘在汉字上的碎片仍要删（同一句里两种情况共存；粘连片段后的空格一并吞掉）
+        assertEquals("小请回答", TextRepair.clean("小LY 请回答ANCE"))
+        assertEquals("OK 我们开始", TextRepair.clean("OK 我们开始"))
     }
 
     @Test
     fun `清理_先折叠卡顿再过滤英文`() {
         assertEquals("动能定理", TextRepair.clean("动能定定定理MILE"))
         assertEquals("我来回答", TextRepair.clean("我我我来回答ANCE"))
-        // 中英混合且英文在句中：吞掉拉丁与紧随其后的一个空格
         assertEquals("阳丽真铮珍", TextRepair.clean("阳丽真ED铮珍M"))
     }
 
     @Test
     fun `过滤英文_保留中文与数字`() {
-        assertEquals("第3题", TextRepair.stripLatinFragments("第3题ABC"))
-        assertEquals("回答一下", TextRepair.stripLatinFragments("回答一下"))
-        assertEquals("", TextRepair.stripLatinFragments("ABC"))
+        assertEquals("第3题", TextRepair.stripGluedLatin("第3题ABC"))
+        assertEquals("回答一下", TextRepair.stripGluedLatin("回答一下"))
+        assertEquals("ABC", TextRepair.stripGluedLatin("ABC"))
+        assertEquals("第3题", TextRepair.stripGluedLatin("第3题"))
     }
 
     @Test

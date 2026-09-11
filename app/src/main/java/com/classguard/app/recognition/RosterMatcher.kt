@@ -41,7 +41,8 @@ class RosterMatcher(
     @Synchronized
     fun onPartial(utterance: String, contextText: String): TriggerEvent? {
         if (utteranceTriggered) return null
-        return check(TriggerMatcher.normalize(utterance), utterance, contextText)
+        val (norm, normToRaw) = TriggerMatcher.normalizeWithMap(utterance)
+        return check(norm, utterance, contextText, normToRaw)
     }
 
     /** 一句话结束：重置"同句一次"状态（上下文由 TriggerMatcher 统一维护）。 */
@@ -77,7 +78,12 @@ class RosterMatcher(
 
     // ------------------------------------------------------------ 内部
 
-    private fun check(norm: String, rawUtterance: String, contextText: String): TriggerEvent? {
+    private fun check(
+        norm: String,
+        rawUtterance: String,
+        contextText: String,
+        normToRaw: IntArray,
+    ): TriggerEvent? {
         if (norm.isEmpty()) return null
         val n = names
 
@@ -90,32 +96,67 @@ class RosterMatcher(
             if (n.context.none { window.contains(it) }) return null
         }
 
-        // 3. 姓名命中：精确变体优先，其次拼音模糊（同音/近音）；多命中时优先"我的名字"
+        // 3. 姓名命中：精确变体优先，其次拼音模糊（同音/近音 + 单字展开容错）；
+        //    多命中时优先"我的名字"，其后按纠偏次数最少（最可能是真名字）
         val exact = n.variants.filter { (v, _) -> norm.contains(v) }
-        var hit: Pair<String, RosterEntry>? = exact.firstOrNull { it.second.isMe } ?: exact.firstOrNull()
-        if (hit == null && pinyin != null) {
-            val fuzzy = n.fuzzy.filter { (t, _) -> pinyin.findMatch(t, norm) != null }
-            hit = fuzzy.firstOrNull { it.second.isMe } ?: fuzzy.firstOrNull()
+        var entry: RosterEntry? = null
+        var spanStart = -1
+        var spanEnd = -1
+        var fuzzyEdits = 0
+        val exactHit = exact.firstOrNull { it.second.isMe } ?: exact.firstOrNull()
+        if (exactHit != null) {
+            entry = exactHit.second
+            spanStart = norm.indexOf(exactHit.first)
+            spanEnd = spanStart + exactHit.first.length - 1
         }
-        val matched = hit ?: return null
-        val entry = matched.second
+        if (entry == null && pinyin != null) {
+            val fuzzy = n.fuzzy.mapNotNull { (t, e) ->
+                pinyin.findAlignedMatch(t, norm)?.let { Triple(e, it, it.insertions + it.substitutions) }
+            }
+            val matched = fuzzy.firstOrNull { it.first.isMe } ?: fuzzy.minByOrNull { it.third }
+            if (matched != null) {
+                entry = matched.first
+                spanStart = matched.second.offset
+                spanEnd = matched.second.end
+                fuzzyEdits = matched.third
+            }
+        }
+        val matchedEntry = entry ?: return null
 
         val now = clock()
         val cooldown = ROSTER_COOLDOWN_FACTOR * TriggerMatcher.cooldownMillisFor(
-            TriggerMatcher.normalize(entry.displayName).length, baseCooldownMillis
+            TriggerMatcher.normalize(matchedEntry.displayName).length, baseCooldownMillis
         )
-        val last = lastTriggerAt[entry.displayName]
+        val last = lastTriggerAt[matchedEntry.displayName]
         if (last != null && now - last < cooldown) return null
-        lastTriggerAt[entry.displayName] = now
+        lastTriggerAt[matchedEntry.displayName] = now
         utteranceTriggered = true
 
         return TriggerEvent(
             timeMillis = now,
-            keyword = entry.displayName,
-            utterance = rawUtterance.trim(),
+            keyword = matchedEntry.displayName,
+            // 语义修复：把命中区间（同音错字/插字/卡顿连字）整段写回为正确姓名，
+            // 转写与提醒里看到的就是真名而不是"章三""张张伟"这类识别畸变
+            utterance = repairSpan(rawUtterance, normToRaw, spanStart, spanEnd, matchedEntry.displayName).trim(),
             context = contextText.trim(),
-            directed = entry.isMe,
+            directed = matchedEntry.isMe,
+            fuzzyEdits = fuzzyEdits,
         )
+    }
+
+    /** 用归一化下标映射把 [start]..[end]（闭区间）对应的原文字区间替换为 [replacement]；映射越界时原样返回。 */
+    private fun repairSpan(
+        raw: String,
+        normToRaw: IntArray,
+        start: Int,
+        end: Int,
+        replacement: String,
+    ): String {
+        if (start < 0 || end < start || end >= normToRaw.size) return raw
+        val rs = normToRaw[start]
+        val re = normToRaw[end]
+        if (rs < 0 || re < rs || re >= raw.length) return raw
+        return raw.substring(0, rs) + replacement + raw.substring(re + 1)
     }
 
     companion object {

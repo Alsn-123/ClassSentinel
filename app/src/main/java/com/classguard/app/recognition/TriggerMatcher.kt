@@ -3,11 +3,13 @@ package com.classguard.app.recognition
 /**
  * 一次触发事件。
  * @param timeMillis 触发时刻
- * @param keyword 命中的词（用户原始输入，非归一化形式）
+ * @param keyword 命中的词（用户原始输入，非归一化形式；拼音模糊命中时即为纠偏后的正确词）
  * @param utterance 触发时老师正在说的这句话（识别文本）
  * @param context 这句话之前识别到的上下文（老师往往先出题后点名，前文常是题目本身）
  * @param directed 是否为"点到我的名字"的定向提醒（名单匹配 v2.0）
  * @param confidence 命中片段的识别置信度（0~1，null 表示未知），低置信时走轻提醒
+ * @param fuzzyEdits 语义校验纠偏次数（v2.2）：同音错字数 + 音节间被插入的无关字数；
+ *   0 表示字面精确命中，>0 表示读音对但字面有出入，置信度会按此扣减
  */
 data class TriggerEvent(
     val timeMillis: Long,
@@ -16,6 +18,7 @@ data class TriggerEvent(
     val context: String,
     val directed: Boolean = false,
     val confidence: Double? = null,
+    val fuzzyEdits: Int = 0,
 )
 
 /**
@@ -45,6 +48,8 @@ class TriggerMatcher(
     baseCooldownMillis: Long = 15_000,
     private val maxContextChars: Int = 80,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** 拼音索引（v2.2）：提供时核心词支持同音/近音错字与单字展开容错命中。 */
+    private val pinyin: PinyinIndex? = null,
 ) {
     /** 归一化词 → 用户原词 的映射与三张词表（均为归一化形式）。 */
     private class Words(
@@ -130,10 +135,11 @@ class TriggerMatcher(
             if (w.context.none { window.contains(it) }) return null
         }
 
-        // 3. 核心词 + 按词独立冷却
+        // 3. 核心词 + 按词独立冷却。字面精确优先；未命中时走读音层语义校验
+        //    （同音错字"回大一下"≈"回答一下"、单字被展开"找个同同学"≈"找个同学"）
         val now = clock()
         for ((normWord, original) in w.core) {
-            if (!normUtterance.contains(normWord)) continue
+            val edits = matchEdits(normWord, normUtterance) ?: continue
             val last = lastTriggerAt[normWord]
             val cooldown = cooldownMillisFor(normWord.length, baseCooldownMillis)
             if (last != null && now - last < cooldown) continue
@@ -144,9 +150,19 @@ class TriggerMatcher(
                 keyword = original,
                 utterance = rawUtterance.trim(),
                 context = committed.toString().trim(),
+                fuzzyEdits = edits,
             )
         }
         return null
+    }
+
+    /** 字面精确命中返回 0；读音容错命中返回纠偏次数；都不命中返回 null。 */
+    private fun matchEdits(normWord: String, normUtterance: String): Int? {
+        if (normUtterance.contains(normWord)) return 0
+        val idx = pinyin ?: return null
+        if (normWord.length < 2 || normWord.any { it.code !in 0x4E00..0x9FFF }) return null
+        val hit = idx.findAlignedMatch(normWord, normUtterance) ?: return null
+        return hit.insertions + hit.substitutions
     }
 
     private fun trimTo(sb: StringBuilder) {
@@ -164,18 +180,39 @@ class TriggerMatcher(
         }
 
         /**
-         * 归一化：只保留汉字、字母、数字（字母小写），去掉标点与空白。
-         * 这样"回答一下，谁来……"和"回答一下"能正确匹配。
+         * 归一化：只保留汉字、字母、数字（字母小写），去掉标点与空白；
+         * 并折叠连续 ≥2 个相同字符（ASR 解码卡顿，见 [normalizeWithMap]）。
+         * 这样"回答一下，谁来……"和"回答一下"能正确匹配，
+         * "动能定定定理"也能直接命中关键词"动能定理"。
          */
-        fun normalize(text: String): String = buildString {
-            for (ch in text) {
-                when {
-                    ch.code in 0x4E00..0x9FFF -> append(ch)
-                    ch in 'a'..'z' -> append(ch)
-                    ch in 'A'..'Z' -> append(ch.lowercaseChar())
-                    ch in '0'..'9' -> append(ch)
-                }
+        fun normalize(text: String): String = normalizeWithMap(text).first
+
+        /**
+         * 归一化 + 原文下标映射（语义修复用）。
+         * 折叠规则：连续 ≥2 个相同字符折叠为 1 个——正常语流中同字连发几乎只出现在
+         * 识别器解码卡顿（"定定定理""来说说说"），两连是最高频形态；
+         * 词表侧做同样归一化，两侧一致所以"谢谢"这类叠词的精确匹配不受影响
+         * （叠词保留仅在展示层 [TextRepair] 处理）。映射指向连字的首字下标，
+         * 语义修复按区间替换时不会残留重复。
+         * @return 归一化文本 + 每个归一化字符在原文本中的下标（等长对应）
+         */
+        fun normalizeWithMap(text: String): Pair<String, IntArray> {
+            val sb = StringBuilder(text.length)
+            val map = ArrayList<Int>(text.length)
+            for (i in text.indices) {
+                val kept = when {
+                    text[i].code in 0x4E00..0x9FFF -> text[i]
+                    text[i] in 'a'..'z' -> text[i]
+                    text[i] in 'A'..'Z' -> text[i].lowercaseChar()
+                    text[i] in '0'..'9' -> text[i]
+                    else -> null
+                } ?: continue
+                val n = sb.length
+                if (n >= 1 && sb[n - 1] == kept) continue
+                sb.append(kept)
+                map.add(i)
             }
+            return sb.toString() to map.toIntArray()
         }
 
         private fun buildWords(specs: List<KeywordSpec>): Words {

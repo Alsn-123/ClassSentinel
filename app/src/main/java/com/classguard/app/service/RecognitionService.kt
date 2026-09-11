@@ -29,6 +29,7 @@ import com.classguard.app.data.TriggerRecord
 import com.classguard.app.data.transcript.TranscriptRepository
 import com.classguard.app.recognition.Confidence
 import com.classguard.app.recognition.PinyinIndex
+import com.classguard.app.recognition.TextRepair
 import com.classguard.app.recognition.TriggerEvent
 import com.classguard.app.recognition.TriggerMatcher
 import com.classguard.app.recognition.RosterMatcher
@@ -235,9 +236,10 @@ class RecognitionService : Service() {
         val cooldown = prefs.cooldownMillis
         val specs = prefs.keywordSpecs
         val roster = prefs.roster
+        val pinyin = PinyinIndex.holder(this)
         val m = matcher
         if (m == null) {
-            matcher = TriggerMatcher(specs, baseCooldownMillis = cooldown)
+            matcher = TriggerMatcher(specs, baseCooldownMillis = cooldown, pinyin = pinyin)
         } else {
             m.updateKeywordSpecs(specs)
             m.updateBaseCooldown(cooldown)
@@ -322,7 +324,8 @@ class RecognitionService : Service() {
                 val result = rec.getResult(stream)
                 val partial = result.text
                 if (partial.isNotEmpty()) {
-                    ServiceBus.setPartial(partial)
+                    // 展示层折叠解码卡顿（"定定定定理"→"定理"），匹配层在 normalize 内同样折叠
+                    ServiceBus.setPartial(TextRepair.collapseStutter(partial))
                     pickEvent(partial, matcherContext = matcher?.contextSnapshot().orEmpty())
                         ?.let { onTrigger(it, result.tokens.toList(), result.ysProbs) }
                 }
@@ -348,7 +351,7 @@ class RecognitionService : Service() {
                                 TranscriptRepository.get(this@RecognitionService).addSegment(
                                     sessionId = sid,
                                     timeMillis = System.currentTimeMillis(),
-                                    text = finalText.trim(),
+                                    text = TextRepair.collapseStutter(finalText.trim()),
                                     isTrigger = kw != null,
                                     keyword = kw,
                                 )
@@ -380,8 +383,15 @@ class RecognitionService : Service() {
 
     /** 日志脱敏：只记录关键词与句长，不落完整识别文本与用户词表。 */
     private fun onTrigger(event: TriggerEvent, tokens: List<String>, probs: FloatArray) {
-        val confidence = Confidence.forKeyword(tokens, probs, TriggerMatcher.normalize(event.keyword))
-        val full = event.copy(confidence = confidence)
+        val confidence = Confidence.withFuzzyPenalty(
+            Confidence.forKeyword(tokens, probs, TriggerMatcher.normalize(event.keyword)),
+            event.fuzzyEdits,
+        )
+        // 历史与提醒横幅同样展示修复后的文本（同音纠偏 + 卡顿折叠）
+        val full = event.copy(
+            confidence = confidence,
+            utterance = TextRepair.collapseStutter(event.utterance),
+        )
         pendingTriggerKeyword = event.keyword // 供该句 final 入库时打触发标记
         Log.i(
             TAG,

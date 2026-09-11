@@ -54,6 +54,16 @@ object Confidence {
         return averageLog(logProbs, 0, logProbs.size)?.let { exp(it) }
     }
 
+    /**
+     * 语义校验的置信度惩罚（v2.2）：拼音容错命中说明 ASR 字面与预期词有出入，
+     * 每处纠偏扣 0.1（同音错字与插入展开都算一处），下限 0.05。
+     * 惩罚后可能跌破 [HIGH_THRESHOLD] → 自动降级为轻提醒，兼顾召回与防误报。
+     */
+    fun withFuzzyPenalty(confidence: Double?, edits: Int): Double? {
+        if (confidence == null || edits <= 0) return confidence
+        return (confidence - 0.1 * edits).coerceAtLeast(0.05)
+    }
+
     private fun averageLog(logProbs: FloatArray, start: Int, length: Int): Double? {
         if (length <= 0) return null
         val end = min(start + length, logProbs.size)

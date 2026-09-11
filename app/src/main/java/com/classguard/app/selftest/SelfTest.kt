@@ -7,6 +7,7 @@ import com.classguard.app.data.PrefsStore
 import com.classguard.app.recognition.Confidence
 import com.classguard.app.recognition.PinyinIndex
 import com.classguard.app.recognition.RosterMatcher
+import com.classguard.app.recognition.TextRepair
 import com.classguard.app.recognition.TriggerEvent
 import com.classguard.app.recognition.TriggerMatcher
 import com.classguard.app.service.AsrEngine
@@ -73,11 +74,14 @@ object SelfTest {
 
             val rec: OnlineRecognizer = AsrEngine.createRecognizer(context)
             val stream = rec.createStream(AsrEngine.buildHotwordsText(prefs.keywordSpecs, prefs.roster))
-            val matcher = TriggerMatcher(prefs.keywordSpecs, baseCooldownMillis = prefs.cooldownMillis)
+            val pinyin = PinyinIndex.holder(context)
+            val matcher = TriggerMatcher(
+                prefs.keywordSpecs, baseCooldownMillis = prefs.cooldownMillis, pinyin = pinyin
+            )
             val rosterMatcher = RosterMatcher(
                 prefs.roster, prefs.keywordSpecs,
                 baseCooldownMillis = prefs.cooldownMillis,
-                pinyin = PinyinIndex.holder(context),
+                pinyin = pinyin,
             )
             val finals = ArrayList<String>()
             val triggers = ArrayList<TriggerEvent>()
@@ -101,17 +105,25 @@ object SelfTest {
                         nameEvent,
                     ).firstOrNull()
                     event?.let {
-                        val conf = Confidence.forKeyword(
-                            result.tokens.toList(), result.ysProbs, TriggerMatcher.normalize(it.keyword)
+                        val conf = Confidence.withFuzzyPenalty(
+                            Confidence.forKeyword(
+                                result.tokens.toList(), result.ysProbs, TriggerMatcher.normalize(it.keyword)
+                            ),
+                            it.fuzzyEdits,
                         )
                         pendingTriggerKeyword = it.keyword
-                        Log.i(TAG, "自测触发: ${it.keyword} conf=${conf ?: "n/a"}")
-                        triggers.add(it.copy(confidence = conf))
+                        Log.i(TAG, "自测触发: ${it.keyword} conf=${conf ?: "n/a"} edits=${it.fuzzyEdits}")
+                        triggers.add(
+                            it.copy(
+                                confidence = conf,
+                                utterance = TextRepair.collapseStutter(it.utterance),
+                            )
+                        )
                     }
                 }
                 if (rec.isEndpoint(stream)) {
                     val finalText = rec.getResult(stream).text
-                    if (finalText.isNotBlank()) finals.add(finalText)
+                    if (finalText.isNotBlank()) finals.add(TextRepair.collapseStutter(finalText))
                     matcher.onFinal(finalText)?.let {
                         pendingTriggerKeyword = it.keyword
                         Log.i(TAG, "自测触发(final): ${it.keyword}")
@@ -127,7 +139,7 @@ object SelfTest {
                                 transcriptRepo?.addSegment(
                                     sessionId = sid,
                                     timeMillis = System.currentTimeMillis(),
-                                    text = finalText.trim(),
+                                    text = TextRepair.collapseStutter(finalText.trim()),
                                     isTrigger = kw != null,
                                     keyword = kw,
                                 )

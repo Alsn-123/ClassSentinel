@@ -100,8 +100,44 @@ class RosterMatcher(
             return Located(exactHit.second, start, start + exactHit.first.length - 1, 0)
         }
         if (pinyin == null) return null
+
+        // 先按完整名字做读音容错对齐
+        locateFuzzy(norm)?.let { return it }
+
+        // 删除容错（v2.4）：ASR 可能吞掉名字里的一个字（实测「养一」漏了「臻」、
+        // 「杨你」只剩两字），长度不足会让整名对齐直接失败。对 ≥3 字名字，
+        // 依次尝试"跳过一个字"再做对齐。
+        //
+        // 两道护栏，避免退化成"见到姓氏就报"：
+        // - 整句至少 3 字：否则"杨一""养一"这类两字片段会命中，误报代价过高；
+        // - 姓氏必须精确命中，且读音层面的偏离（近似音 + 插入）有上限——
+        //   注意"养一"与"杨易"是同音不同字，属于读音完全相符，不该按字面差异计入。
+        if (norm.length < 3) return null
+        val reduced = n.fuzzy.mapNotNull { (t, e) ->
+            if (t.length < 3) null
+            else {
+                for (k in t.indices) {
+                    val short = t.removeRange(k, k + 1)
+                    val hit = pinyin.findAlignedMatch(short, norm) ?: continue
+                    if (!hit.surnameExact) continue
+                    if (hit.insertions > PinyinIndex.maxInsertionsFor(short.length)) continue
+                    if (hit.closeSubstitutions > 1) continue
+                    return@mapNotNull Triple(e, hit, hit.insertions + hit.substitutions + 1)
+                }
+                null
+            }
+        }
+        val matched = reduced.firstOrNull { it.first.isMe } ?: reduced.minByOrNull { it.third }
+            ?: return null
+        return Located(matched.first, matched.second.offset, matched.second.end, matched.third)
+    }
+
+    /** 完整名字的读音容错对齐（同音/近似音 + 插入容错）。 */
+    private fun locateFuzzy(norm: String): Located? {
+        val n = names
+        val p = pinyin ?: return null
         val fuzzy = n.fuzzy.mapNotNull { (t, e) ->
-            pinyin.findAlignedMatch(t, norm)
+            p.findAlignedMatch(t, norm)
                 ?.takeIf { accepted(t.length, it) }
                 ?.let { Triple(e, it, it.insertions + it.substitutions) }
         }

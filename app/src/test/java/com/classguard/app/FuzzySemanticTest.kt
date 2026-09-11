@@ -295,12 +295,46 @@ class FuzzySemanticTest {
         assertNotNull(m.onPartial("这道题请阳丽真来说", "")) // 仍能正常触发
     }
 
+    @Test
+    fun `名单_删除容错（ASR 吞掉名字里的字）`() {
+        // 真机记录：说"阳一真"被识别成"养一"（yang yi，吞掉了"臻"）——未触发
+        val roster = listOf(RosterEntry("阳一真", isMe = true))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2())
+        val e = m.onPartial("这道题请养一来回答", "")
+        assertNotNull(e)
+        assertEquals("阳一真", e!!.keyword)
+        assertTrue(e.utterance.contains("阳一真")) // 被吞的字补回真名
+    }
+
+    @Test
+    fun `名单_删除容错仍要求姓氏命中`() {
+        // "王一"对"阳一真"：姓氏王(wang)与杨(yan)不符 → 不认
+        val indexWang = PinyinIndex.fromMap(
+            mapOf(
+                "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+                "王" to setOf("wan"), "一" to setOf("yi"),
+            )
+        )
+        val roster = listOf(RosterEntry("阳一真"))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = indexWang)
+        assertNull(m.onPartial("这道题请王一来回答", ""))
+    }
+
+    @Test
+    fun `名单_删除容错对两字名不生效`() {
+        // 2 字名不启用删除容错（只剩一个字，误报代价高）
+        val roster = listOf(RosterEntry("杨易"))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2())
+        assertNull(m.onPartial("这道题请杨来回答", ""))
+    }
+
     private fun index2() = PinyinIndex.fromMap(
         mapOf(
             "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
             "丽" to setOf("li"), "珍" to setOf("zen"), "来" to setOf("lai"),
             "说" to setOf("suo"), "今" to setOf("jin"), "天" to setOf("tian"),
             "气" to setOf("qi"), "不" to setOf("bu"), "错" to setOf("cuo"),
+            "养" to setOf("yan"), "一" to setOf("yi"),
         )
     )
 

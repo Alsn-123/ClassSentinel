@@ -12,8 +12,13 @@ import kotlin.math.min
  */
 object Confidence {
 
-    /** 置信度达到该值走全量提醒（横幅+震动+声音）；低于则仅通知轻提醒。 */
-    const val HIGH_THRESHOLD = 0.5
+    /**
+     * 置信度达到该值走全量提醒（横幅+震动+声音）；低于则仅通知轻提醒。
+     * v2.3 由 0.5 下调至 0.2：整句平均置信度天然偏低（逐 token 对数概率取均值后
+     * exp 回概率域），0.5 会把大量正常命中误判为"低置信"而降级成静音通知，
+     * 表现为"识别出来了却不报警"。仅明显异常时才降级。
+     */
+    const val HIGH_THRESHOLD = 0.2
 
     /**
      * @param tokens 识别结果的 token 文本序列
@@ -63,6 +68,17 @@ object Confidence {
         if (confidence == null || edits <= 0) return confidence
         return (confidence - 0.1 * edits).coerceAtLeast(0.05)
     }
+
+    /**
+     * 是否走全量提醒（横幅 + 震动 + 声音），而非仅静音通知（v2.3）。
+     *
+     * 逻辑：字面精确命中（无纠偏）一律全量——文本已完全对上，没有静音的理由；
+     * 只有"猜测性命中"才看置信度，且阈值放宽到 [HIGH_THRESHOLD]（0.2）。
+     * 修复前是"置信度 < 0.5 就静音"，而整句平均置信度天然偏低，
+     * 于是大量正常触发被降级成静音通知，表现为"识别出来了却不报警"。
+     */
+    fun shouldFullAlert(confidence: Double?, fuzzyEdits: Int): Boolean =
+        fuzzyEdits == 0 || confidence == null || confidence >= HIGH_THRESHOLD
 
     private fun averageLog(logProbs: FloatArray, start: Int, length: Int): Double? {
         if (length <= 0) return null

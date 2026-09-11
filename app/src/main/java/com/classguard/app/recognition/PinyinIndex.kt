@@ -18,19 +18,38 @@ import android.util.Log
 class PinyinIndex private constructor(private val map: Map<String, Set<String>>) {
 
     /**
-     * 容错对齐命中（v2.2 语义校验）：
+     * 容错对齐命中（v2.2 语义校验 / v2.3 近似音）：
      * @param offset 名字首字在 utterance 中的起始偏移
      * @param end 名字末字对齐到 utterance 中的位置（闭区间，含插入字在内的整段 span）
      * @param insertions 音节之间被 ASR 插入的无关字数（"一字被识别成两三字"的展开现象）
-     * @param substitutions 同音/近音错字数（读音对但字不对，语义校验通过、按错字数扣置信度）
+     * @param substitutions 非精确命中字数（同音异字或近似音，读音对但字不对）
+     * @param closeSubstitutions 其中的"近似音"字数（韵母相同、声母不同，如 yi/li）——
+     *   比同音替换更弱，名单匹配据此收紧采信条件
+     * @param surnameExact 首字（姓氏）是否为精确读音命中
      */
-    data class FuzzyHit(val offset: Int, val end: Int, val insertions: Int, val substitutions: Int)
+    data class FuzzyHit(
+        val offset: Int,
+        val end: Int,
+        val insertions: Int,
+        val substitutions: Int,
+        val closeSubstitutions: Int = 0,
+        val surnameExact: Boolean = true,
+    )
 
     companion object {
         private const val TAG = "PinyinIndex"
         private const val ASSET = "pinyin/pinyin.txt"
 
         val EMPTY = PinyinIndex(emptyMap())
+
+        /** 归一化后的声母集合（zh/ch/sh 已在构建期归一为 z/c/s，故均为单字符）。 */
+        private val INITIALS = "bpmfdtnlgkhjqxzcsryw".toSet()
+
+        /** 取韵母：去掉首字母声母后的部分；零声母音节（an/ai/en/ou…）原样返回。 */
+        fun finalOf(syllable: String): String {
+            if (syllable.length <= 1) return syllable
+            return if (syllable[0] in INITIALS) syllable.substring(1) else syllable
+        }
 
         /**
          * 插入容差预算：名字 2 字允许插 1 个无关字，≥3 字允许插 2 个。
@@ -98,6 +117,12 @@ class PinyinIndex private constructor(private val map: Map<String, Set<String>>)
      * 相邻两个对齐字之间允许夹带少量无关字（ASR 把单字展开成多字词的现象）。
      * 首尾之外的文本不计成本；在插入数不超过预算（[maxInsertionsFor]）的前提下，
      * 返回"插入数最少、其次替换数最少"的对齐路径。
+     *
+     * v2.3 近似音：除读音完全相交外，还接受"韵母相同、声母不同"的字参与对齐并单独计
+     * 入 [FuzzyHit.closeSubstitutions]。这解决人名的高频误识——`易(yi)` 被识别成
+     * `丽(li)`、`臻(zhen)`↔`珍(zhen)` 这类声母混淆（课堂远场最常见，且不改变语义）。
+     * 是否采信由调用方按纠偏数裁决（名单要求严格，见 RosterMatcher）。
+     *
      * 复杂度 O(len(utterance) × len(name))，匹配层每个 partial 调一次，开销可忽略。
      */
     fun findAlignedMatch(name: String, utterance: String): FuzzyHit? {
@@ -113,7 +138,7 @@ class PinyinIndex private constructor(private val map: Map<String, Set<String>>)
         // dp[j][i]：名字前 j+1 个字全部对齐、第 j+1 个字对齐到 utterance[i] 的最小插入数
         val dp = Array(m) { IntArray(n) { INF } }
         for (i in 0 until n) {
-            if (readsAt(nameReads[0]!!, utterance[i])) dp[0][i] = 0
+            if (aligns(nameReads[0]!!, utterance[i])) dp[0][i] = 0
         }
         for (j in 1 until m) {
             val prev = dp[j - 1]
@@ -121,7 +146,7 @@ class PinyinIndex private constructor(private val map: Map<String, Set<String>>)
             // prefix 最小值：min over i' < i of (prev[i'] - i' - 1)，先用于当前 i 再纳入 prev[i]
             var bestPrefix = INF
             for (i in 0 until n) {
-                if (bestPrefix < INF && readsAt(nameReads[j]!!, utterance[i])) {
+                if (bestPrefix < INF && aligns(nameReads[j]!!, utterance[i])) {
                     val cand = bestPrefix + i
                     if (cand < cur[i]) cur[i] = cand
                 }
@@ -158,15 +183,37 @@ class PinyinIndex private constructor(private val map: Map<String, Set<String>>)
             positions[j] = found
             end = found
         }
+        // 统计（口径分离，便于调用方分别裁决）：
+        // - substitutions：字面不同 = 需要纠偏的字数（驱动置信度惩罚）
+        // - closeSubstitutions：字面不同且读音并非完全相交（只是韵母相同的近似音）
+        //   —— 比同音替换更弱，名单据此收紧采信
+        // - surnameExact：首字读音完全相交（姓氏必须对上）
         var substitutions = 0
+        var closeSubstitutions = 0
+        var surnameExact = true
         for (j in 0 until m) {
-            if (utterance[positions[j]] != name[j]) substitutions++
+            if (utterance[positions[j]] == name[j]) continue
+            substitutions++
+            if (!intersectsExactly(nameReads[j]!!, utterance[positions[j]])) closeSubstitutions++
         }
-        return FuzzyHit(positions[0], bestEnd, bestIns, substitutions)
+        if (!intersectsExactly(nameReads[0]!!, utterance[positions[0]])) surnameExact = false
+        return FuzzyHit(positions[0], bestEnd, bestIns, substitutions, closeSubstitutions, surnameExact)
     }
 
-    private fun readsAt(nameReads: Set<String>, ch: Char): Boolean {
+    /** 参与对齐（宽松）：读音相交，或韵母相同（声母不同）的近似音。 */
+    private fun aligns(nameReads: Set<String>, ch: Char): Boolean {
+        val r = map[ch.toString()] ?: return false
+        return nameReads.any { it in r } || isCloseReading(nameReads, ch)
+    }
+
+    private fun intersectsExactly(nameReads: Set<String>, ch: Char): Boolean {
         val r = map[ch.toString()] ?: return false
         return nameReads.any { it in r }
+    }
+
+    /** 近似音：与目标字任一读音"韵母相同"（去声调后声母不同的常见混淆，如 yi/li）。 */
+    private fun isCloseReading(nameReads: Set<String>, ch: Char): Boolean {
+        val r = map[ch.toString()] ?: return false
+        return nameReads.any { want -> r.any { got -> finalOf(want) == finalOf(got) } }
     }
 }

@@ -111,7 +111,9 @@ class RosterMatcher(
         }
         if (entry == null && pinyin != null) {
             val fuzzy = n.fuzzy.mapNotNull { (t, e) ->
-                pinyin.findAlignedMatch(t, norm)?.let { Triple(e, it, it.insertions + it.substitutions) }
+                pinyin.findAlignedMatch(t, norm)
+                    ?.takeIf { accepted(t.length, it) }
+                    ?.let { Triple(e, it, it.insertions + it.substitutions) }
             }
             val matched = fuzzy.firstOrNull { it.first.isMe } ?: fuzzy.minByOrNull { it.third }
             if (matched != null) {
@@ -162,6 +164,24 @@ class RosterMatcher(
     companion object {
         /** 姓名类冷却放大系数：默认为基础冷却的 2 倍。 */
         const val ROSTER_COOLDOWN_FACTOR = 2L
+
+        /**
+         * 近似音采信规则（v2.3）。
+         *
+         * 人名是高频误识重灾区：`阳一真` 常被识别成 `阳丽真`（易 yi / 丽 li 声母不同、
+         * 韵母相同）。需要放宽匹配才能召回，但放宽过头会把无关语句当成点名，因此：
+         *
+         * - 姓氏（首字）读音必须完全相交——不认姓氏错的名字；
+         * - 同音替换（章三→张三，读音相同只是字不同）任何长度都接受，这是 v2.1 起的核心能力；
+         * - 近似音（只是韵母相同，如 易/丽）只允许 3 字及以上的名字出现 1 处，
+         *   2 字名字不接受——单字音节韵母相同的组合太多，误报代价高。
+         */
+        fun accepted(nameLength: Int, hit: PinyinIndex.FuzzyHit): Boolean {
+            if (hit.insertions > PinyinIndex.maxInsertionsFor(nameLength)) return false
+            if (!hit.surnameExact) return false
+            val closeBudget = if (nameLength >= 3) 1 else 0
+            return hit.closeSubstitutions <= closeBudget
+        }
 
         private fun buildNames(roster: List<RosterEntry>, specs: List<KeywordSpec>): Names {
             val variants = LinkedHashMap<String, RosterEntry>()

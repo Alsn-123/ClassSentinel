@@ -205,6 +205,75 @@ class FuzzySemanticTest {
         assertTrue(Arrays.equals(expected, mapping))
     }
 
+    @Test
+    fun `名单_近似音纠偏（声母不同韵母相同）`() {
+        // 用户实测案例：阳一真(yang yi zhen) 被识别成 阳丽真(yang li zhen)
+        // 易(yi)/丽(li) 声母不同、韵母同为 i → 近似音；姓氏杨必须对上
+        val index2 = PinyinIndex.fromMap(
+            mapOf(
+                "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+                "丽" to setOf("li"), "珍" to setOf("zen"),
+                "来" to setOf("lai"), "说" to setOf("suo"),
+            )
+        )
+        val roster = listOf(RosterEntry("阳一真", isMe = true))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2)
+        val e = m.onPartial("这道题请阳丽真来说", "")
+        assertNotNull(e)
+        assertEquals("阳一真", e!!.keyword) // 事件回传真名
+        assertTrue(e.directed)
+        assertTrue(e.utterance.contains("阳一真")) // 原句错字已写回真名
+    }
+
+    @Test
+    fun `名单_近似音不认姓氏错的名字`() {
+        // 姓氏读音完全不符（王 wang vs 杨 yan）→ 拒绝，防误报
+        val index2 = PinyinIndex.fromMap(
+            mapOf(
+                "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+                "王" to setOf("wan"), "丽" to setOf("li"), "珍" to setOf("zen"),
+            )
+        )
+        val roster = listOf(RosterEntry("阳一真"))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2)
+        assertNull(m.onPartial("这道题请王丽珍来说", ""))
+    }
+
+    @Test
+    fun `名单_两字名不接受近似音`() {
+        // 2 字名韵母组合太宽（李/你/米 韵母都是 i），只认同音替换，不认近似音
+        val index2 = PinyinIndex.fromMap(
+            mapOf(
+                "李" to setOf("li"), "娜" to setOf("na"),
+                "米" to setOf("mi"), "那" to setOf("na"),
+            )
+        )
+        val roster = listOf(RosterEntry("李娜"))
+        val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2)
+        assertNull(m.onPartial("这道题请米那来说", ""))
+    }
+
+    @Test
+    fun `告警决策_精确命中一律全量提醒`() {
+        // 回归"识别出来了却不报警"：字面完全命中的关键词不再因置信度被静音
+        assertTrue(Confidence.shouldFullAlert(0.10, 0))
+        assertTrue(Confidence.shouldFullAlert(0.0, 0))
+        assertTrue(Confidence.shouldFullAlert(null, 0))
+    }
+
+    @Test
+    fun `告警决策_普通容错命中仍全量提醒`() {
+        // 典型场景：置信 0.55、纠偏 1 处 → 0.45 ≥ 0.2 → 横幅+震动+声音
+        val c = Confidence.withFuzzyPenalty(0.55, 1)
+        assertTrue(Confidence.shouldFullAlert(c, 1))
+    }
+
+    @Test
+    fun `告警决策_仅明显异常才降级静音`() {
+        val c = Confidence.withFuzzyPenalty(0.25, 2) // → 0.05
+        assertFalse(Confidence.shouldFullAlert(c, 2))
+    }
+
     // ------------------------------------------------------------ 置信度惩罚
 
     @Test
@@ -221,10 +290,13 @@ class FuzzySemanticTest {
     }
 
     @Test
-    fun `Confidence_惩罚有下限且可跌破高阈值`() {
+    fun `Confidence_惩罚有下限且阈值放宽为0_2`() {
         assertEquals(0.05, Confidence.withFuzzyPenalty(0.05, 9)!!, 0.001)
-        // 0.55 - 0.1 = 0.45 < HIGH_THRESHOLD(0.5) → 降级轻提醒
-        assertTrue(Confidence.withFuzzyPenalty(0.55, 1)!! < Confidence.HIGH_THRESHOLD)
+        // v2.3 阈值 0.5→0.2：普通命中（0.55 扣 1 处 = 0.45）仍走全量提醒，不再被静音
+        assertEquals(0.2, Confidence.HIGH_THRESHOLD, 0.0001)
+        assertTrue(Confidence.withFuzzyPenalty(0.55, 1)!! >= Confidence.HIGH_THRESHOLD)
+        // 只有明显异常（低置信 + 多处置信惩罚）才降到阈值以下
+        assertTrue(Confidence.withFuzzyPenalty(0.25, 2)!! < Confidence.HIGH_THRESHOLD)
     }
 
     private fun specs() = listOf(KeywordSpec("这道题", KeywordType.CONTEXT))

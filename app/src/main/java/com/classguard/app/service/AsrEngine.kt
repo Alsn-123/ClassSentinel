@@ -35,7 +35,15 @@ object AsrEngine {
     const val JOINER = "asr-model/joiner-int8.onnx"
     const val TOKENS = "asr-model/tokens.txt"
 
-    private const val HOTWORDS_SCORE = 2.0f
+    /**
+     * 热词偏置分（v2.3 由 2.0 提到 3.5）。
+     *
+     * 命中率低的主因之一是解码器不知道"这些词才可能出现"：教师念"阳一真"，声学上
+     * 与"阳丽真"接近，无偏置时模型会挑更常见的"阳丽真"。提高偏置分让解码器在
+     * 声学相近时优先输出词表里的名字，比事后纠错更有效（纠错只是兜底）。
+     * 过高（>5）会压制声学证据、把无关语句硬拉成热词，故取 3.5。
+     */
+    private const val HOTWORDS_SCORE = 3.5f
 
     // 端点检测参数（针对老师讲课停顿多的远场场景调优；改动需真机 A/B）：
     // rule2 从 0.8s 放宽到 1.2s、最小语句 2.4s→3.0s：减少"中途停顿被误判为句末"

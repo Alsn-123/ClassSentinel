@@ -129,17 +129,20 @@ class TriggerMatcher(
         // 1. 排除优先：本句命中排除词则整体屏蔽
         if (w.exclude.any { normUtterance.contains(it) }) return null
 
-        // 2. 语境门控：语境词非空时需要 核心词 +（本句或前文）语境词 同时命中
-        if (w.context.isNotEmpty()) {
-            val window = normUtterance + committedNorm
-            if (w.context.none { window.contains(it) }) return null
-        }
-
-        // 3. 核心词 + 按词独立冷却。字面精确优先；未命中时走读音层语义校验
-        //    （同音错字"回大一下"≈"回答一下"、单字被展开"找个同同学"≈"找个同学"）
+        // 2. 语境门控 + 3. 核心词 + 按词独立冷却
+        //    注意门控按"词"判断而非整句（v2.3）：长短语（≥4 字，如"回答一下""找个同学"）
+        //    语义已自足，缺语境词也必须报，否则会漏掉最核心的点名动作；
+        //    短词（2~3 字，如"找同学""谁答"）歧义大，仍要求语境配合以压误报。
         val now = clock()
+        val gate = w.context.isNotEmpty()
+        val window = if (gate) normUtterance + committedNorm else ""
         for ((normWord, original) in w.core) {
             val edits = matchEdits(normWord, normUtterance) ?: continue
+            if (gate && normWord.length < CONTEXT_GATED_MAX_LEN &&
+                w.context.none { window.contains(it) }
+            ) {
+                continue
+            }
             val last = lastTriggerAt[normWord]
             val cooldown = cooldownMillisFor(normWord.length, baseCooldownMillis)
             if (last != null && now - last < cooldown) continue
@@ -172,6 +175,13 @@ class TriggerMatcher(
     }
 
     companion object {
+        /**
+         * 语境门控适用的最大核心词长度：短于该值的词需要语境配合。
+         * 4 字及以上的短语语义自足（"回答一下""找个同学"），不再门控——否则教师只说
+         * 点名语、前后文没有"这道题"之类的语境词时会整句漏报（v2.3 修复）。
+         */
+        const val CONTEXT_GATED_MAX_LEN = 4
+
         /** 冷却分级：≥5 字减半（长词误报率低），3–4 字取基准，≤2 字翻倍（短词易误报）。 */
         fun cooldownMillisFor(normWordLength: Int, baseMillis: Long): Long = when {
             normWordLength >= 5 -> baseMillis / 2

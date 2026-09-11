@@ -185,16 +185,15 @@ class PrefsStore(context: Context) {
             "举手回答",
         )
 
-        /** 默认语境词：与核心词构成"出题语境 + 点名动作"的门控（从严，可一键清空退回纯核心模式）。 */
-        val DEFAULT_CONTEXT = listOf(
-            "这道题",
-            "这个问题",
-            "接下来",
-            "请问",
-            "说说",
-            "讲一下",
-            "思考一下",
-        )
+        /**
+         * 默认语境词：**默认为空**（v2.3 起）。
+         *
+         * 语境门控原是"从严"设计：核心词需与语境词同现才触发。实测发现它会把最核心的
+         * 点名语漏掉——教师只说"回答一下"、前后文没有"这道题"这类词时整句被拦。
+         * 因此默认不再启用；需要压误报的用户可在界面自行添加语境词，
+         * 且门控只作用于 2~3 字的短核心词（见 TriggerMatcher.CONTEXT_GATED_MAX_LEN）。
+         */
+        val DEFAULT_CONTEXT = emptyList<String>()
 
         fun defaultSpecs(): List<KeywordSpec> =
             DEFAULT_CORE.map { KeywordSpec(it, KeywordType.CORE) } +

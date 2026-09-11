@@ -295,7 +295,9 @@ fun AppScreen(activity: MainActivity) {
     val notifGranted = remember(tick) { activity.hasNotifPermission() }
     val overlayGranted = remember(tick) { activity.canDrawOverlays() }
     val batteryExempt = remember(tick) { activity.ignoringBatteryOptimizations() }
-    val hasTestWav = remember { SelfTest.hasTestWav(activity.assets) && BuildConfig.DEBUG }
+    // 自测音频已随 main/assets 打进所有构建（v2.3），release 包同样可用自测；
+    // 仅以"资源是否存在"判定，不再用 BuildConfig.DEBUG 屏蔽（否则正式版没有自测入口）
+    val hasTestWav = remember { SelfTest.hasTestWav(activity.assets) }
     val romSteps = remember { RomGuides.steps() }
 
     Column(

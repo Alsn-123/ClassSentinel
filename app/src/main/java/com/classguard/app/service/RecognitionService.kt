@@ -416,7 +416,8 @@ class RecognitionService : Service() {
             full,
             sound = prefs.soundEnabled,
             vibration = prefs.vibrationEnabled,
-            fullAlert = confidence == null || confidence >= Confidence.HIGH_THRESHOLD,
+            // 精确命中一律全量提醒；仅"猜测性命中"按置信度决定是否降级（v2.3 修复"不报警"）
+            fullAlert = Confidence.shouldFullAlert(confidence, event.fuzzyEdits),
         )
     }
 

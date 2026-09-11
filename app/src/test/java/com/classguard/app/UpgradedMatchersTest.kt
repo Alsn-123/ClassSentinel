@@ -144,12 +144,26 @@ class TriggerMatcherTest {
     // ------------------------------------------------------------ 语境门控
 
     @Test
-    fun `语境词非空时同句需核心词加语境词同时命中`() {
-        val m = TriggerMatcher(core("找个同学") + context("这道题"), clock = clock)
+    fun `语境词门控作用于短核心词`() {
+        // v2.3：门控只作用于 <4 字的短核心词（长短语语义自足，见下一个用例）
+        val m = TriggerMatcher(core("找同学") + context("这道题"), clock = clock)
         now = 1000
-        assertNull(m.onPartial("我找个同学")) // 无语境
+        assertNull(m.onPartial("我找同学")) // 无语境
         now = 2000
-        assertNotNull(m.onPartial("这道题我找个同学")) // 同句语境
+        assertNotNull(m.onPartial("这道题我找同学")) // 同句语境
+    }
+
+    @Test
+    fun `长核心词不因缺语境词漏报`() {
+        // 回归：教师只说点名语、前后文没有语境词时必须照样触发（原来整句被门控拦掉）
+        val m = TriggerMatcher(core("回答一下", "找个同学") + context("这道题"), clock = clock)
+        now = 1000
+        val e = m.onPartial("下面你回答一下")
+        assertNotNull(e)
+        assertEquals("回答一下", e!!.keyword)
+        m.onFinal("下面你回答一下")
+        now = 100_000
+        assertNotNull(m.onPartial("我找个同学"))
     }
 
     @Test

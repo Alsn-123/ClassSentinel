@@ -25,8 +25,9 @@ object ServiceBus {
     private val _partialText = MutableStateFlow("")
     val partialText: StateFlow<String> = _partialText
 
-    /** 触发事件流（界面刷新历史/弹提醒预览用）。 */
+    /** 触发事件流（界面刷新历史/弹提醒预览用）。replay=1：页面回到主界面时仍能拿到最近一次提醒。 */
     private val _alertEvents = MutableSharedFlow<TriggerEvent>(
+        replay = 1,
         extraBufferCapacity = 16,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )

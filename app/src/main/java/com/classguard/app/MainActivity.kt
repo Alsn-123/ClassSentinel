@@ -886,6 +886,8 @@ private fun SettingsScreen(activity: MainActivity, onBack: () -> Unit) {
                             selfTestRunning = false
                             results.forEach { r ->
                                 r.triggers.forEach {
+                                    // 与真实触发同一通道：同步更新主界面"最近提醒"卡片
+                                    ServiceBus.emitAlert(it)
                                     AlertManager.onTrigger(
                                         activity, it, prefs.soundEnabled, prefs.vibrationEnabled,
                                     )

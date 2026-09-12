@@ -211,7 +211,8 @@ class FuzzySemanticTest {
         // 易(yi)/丽(li) 声母不同、韵母同为 i → 近似音；姓氏杨必须对上
         val index2 = PinyinIndex.fromMap(
             mapOf(
-                "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+                "阳" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+                "真" to setOf("zen"),
                 "丽" to setOf("li"), "珍" to setOf("zen"),
                 "来" to setOf("lai"), "说" to setOf("suo"),
             )
@@ -311,7 +312,8 @@ class FuzzySemanticTest {
         // "王一"对"阳一真"：姓氏王(wang)与杨(yan)不符 → 不认
         val indexWang = PinyinIndex.fromMap(
             mapOf(
-                "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+                "阳" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+                "真" to setOf("zen"),
                 "王" to setOf("wan"), "一" to setOf("yi"),
             )
         )
@@ -323,14 +325,15 @@ class FuzzySemanticTest {
     @Test
     fun `名单_删除容错对两字名不生效`() {
         // 2 字名不启用删除容错（只剩一个字，误报代价高）
-        val roster = listOf(RosterEntry("杨易"))
+        val roster = listOf(RosterEntry("阳一"))
         val m = RosterMatcher(roster, specs(), clock = { 1000L }, pinyin = index2())
-        assertNull(m.onPartial("这道题请杨来回答", ""))
+        assertNull(m.onPartial("这道题请阳来回答", ""))
     }
 
     private fun index2() = PinyinIndex.fromMap(
         mapOf(
-            "杨" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+            "阳" to setOf("yan"), "易" to setOf("yi"), "臻" to setOf("zen"),
+            "真" to setOf("zen"),
             "丽" to setOf("li"), "珍" to setOf("zen"), "来" to setOf("lai"),
             "说" to setOf("suo"), "今" to setOf("jin"), "天" to setOf("tian"),
             "气" to setOf("qi"), "不" to setOf("bu"), "错" to setOf("cuo"),

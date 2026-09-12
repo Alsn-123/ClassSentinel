@@ -150,25 +150,39 @@ object AlertManager {
             textSize = if (event.directed) 17f else 15f
             typeface = Typeface.DEFAULT_BOLD
         }
-
-        val utterance = TextView(context).apply {
-            text = event.utterance
-            setTextColor(Color.WHITE)
-            textSize = if (event.directed) 19f else 17f
-            setLineSpacing(dp(2).toFloat(), 1f)
-        }
-
         root.addView(title)
-        root.addView(utterance, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) })
 
+        // 题目主位（v2.5）：报警时最先要看的是老师念的题干，放最大字号；
+        // 原句识别噪声多（错字/英文碎片），降为辅助信息
         if (event.context.isNotBlank()) {
-            val contextText = TextView(context).apply {
-                text = context.getString(R.string.alert_context_prefix, event.context)
-                setTextColor(0xFFB0BEC5.toInt())
-                textSize = 13f
+            val label = TextView(context).apply {
+                text = "题目"
+                setTextColor(0xFF90A4AE.toInt())
+                textSize = 11f
+            }
+            val question = TextView(context).apply {
+                text = event.context
+                setTextColor(Color.WHITE)
+                textSize = if (event.directed) 20f else 18f
+                typeface = Typeface.DEFAULT_BOLD
+                setLineSpacing(dp(2).toFloat(), 1f)
             }
             root.addView(
-                contextText,
+                label,
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) },
+            )
+            root.addView(question)
+        }
+
+        if (event.utterance.isNotBlank()) {
+            val utterance = TextView(context).apply {
+                text = "原话：" + event.utterance
+                setTextColor(0xFFCFD8DC.toInt())
+                textSize = 13f
+                setLineSpacing(dp(1).toFloat(), 1f)
+            }
+            root.addView(
+                utterance,
                 LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) },
             )
         }
@@ -228,11 +242,24 @@ object AlertManager {
         } else {
             context.getString(R.string.alert_title)
         }
+        // 题目优先（v2.5）：通知首行展示题干，原话放展开文本
+        val hasQuestion = event.context.isNotBlank()
         val builder = NotificationCompat.Builder(context, CHANNEL_ALERTS)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle(title)
-            .setContentText(event.utterance)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(event.utterance))
+            .setContentText(if (hasQuestion) event.context else event.utterance)
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    if (hasQuestion) {
+                        buildString {
+                            appendLine("题目：" + event.context)
+                            if (event.utterance.isNotBlank()) append("原话：" + event.utterance)
+                        }
+                    } else {
+                        event.utterance
+                    }
+                )
+            )
             .setPriority(
                 if (highPriority) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT
             )

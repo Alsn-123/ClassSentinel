@@ -60,7 +60,7 @@ object SelfTest {
             }
         }
         if (hasAsset(context.assets, NAME_TEST_WAV)) {
-            results.add(runNameProbe(context))
+            results.add(runNameProbe(context, prefs))
         }
         return results
     }
@@ -71,7 +71,7 @@ object SelfTest {
      *
      * 用固定名单而非用户名单：结果与用户配置无关，便于横向对比。
      */
-    private fun runNameProbe(context: Context): SectionResult {
+    private fun runNameProbe(context: Context, prefs: PrefsStore): SectionResult {
         val name = "姓名识别探针（$PROBE_NAME，带/不带热词对比）"
         return try {
             val pcm = runCatching { readWavAsMono16k(context.assets, NAME_TEST_WAV) }
@@ -86,7 +86,7 @@ object SelfTest {
             val pinyin = PinyinIndex.holder(context)
 
             fun recognize(hotwords: String, score: Float = AsrEngine.DEFAULT_HOTWORDS_SCORE): String {
-                val rec = AsrEngine.createRecognizer(context, hotwordsScore = score)
+                val rec = AsrEngine.createRecognizer(context, hotwordsScore = score, modelId = prefs.modelVariant)
                 val stream = rec.createStream(hotwords)
                 val sb = StringBuilder()
                 var offset = 0
@@ -165,7 +165,7 @@ object SelfTest {
                 }
             }
 
-            val rec: OnlineRecognizer = AsrEngine.createRecognizer(context)
+            val rec: OnlineRecognizer = AsrEngine.createRecognizer(context, modelId = prefs.modelVariant)
             val stream = rec.createStream(AsrEngine.buildHotwordsText(prefs.keywordSpecs, prefs.roster))
             val pinyin = PinyinIndex.holder(context)
             val matcher = TriggerMatcher(

@@ -86,15 +86,33 @@ class PrefsStore(context: Context) {
         get() = sp.getBoolean(KEY_MONITORING_ENABLED, false)
         set(value) = sp.edit().putBoolean(KEY_MONITORING_ENABLED, value).apply()
 
-    /** 模型完整性校验结果缓存（true=通过），避免每次启动重复校验 190MB 文件。 */
+    /** 模型完整性校验结果缓存（true=通过），避免每次启动重复校验模型文件。 */
     var modelIntegrityOk: Boolean
         get() = sp.getBoolean(KEY_MODEL_INTEGRITY, false)
         set(value) = sp.edit().putBoolean(KEY_MODEL_INTEGRITY, value).apply()
+
+    /** 完整性校验通过时的模型标识——切换模型后需重新校验。 */
+    var modelIntegrityModel: String
+        get() = sp.getString(KEY_MODEL_INTEGRITY_MODEL, "") ?: ""
+        set(value) = sp.edit().putString(KEY_MODEL_INTEGRITY_MODEL, value).apply()
 
     /** 课堂转写开关（v2.2，默认关闭；数据仅存本机 Room）。 */
     var transcriptEnabled: Boolean
         get() = sp.getBoolean(KEY_TRANSCRIPT, false)
         set(value) = sp.edit().putBoolean(KEY_TRANSCRIPT, value).apply()
+
+    // ------------------------------------------------------ 识别模型
+
+    /**
+     * 识别模型（v2.5 可选）。
+     * 见 [com.classguard.app.service.AsrEngine] 的模型定义：
+     * bilingual = 标准中英双语（默认，精度高，课堂远场首选）；
+     * zh_light = 轻量中文（词表无英文，消除英文幻觉；参数量小，弱机型更流畅）。
+     * 切换需停止监听后重新开始（服务启动时按此值加载模型）。
+     */
+    var modelVariant: String
+        get() = sp.getString(KEY_MODEL_VARIANT, AsrModelIds.BILINGUAL) ?: AsrModelIds.BILINGUAL
+        set(value) = sp.edit().putString(KEY_MODEL_VARIANT, value).apply()
 
     // ------------------------------------------------------ 历史
 
@@ -145,9 +163,17 @@ class PrefsStore(context: Context) {
         private const val KEY_VIBRATION = "vibration_enabled"
         private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
         private const val KEY_MODEL_INTEGRITY = "model_integrity_ok"
+        private const val KEY_MODEL_INTEGRITY_MODEL = "model_integrity_model"
         private const val KEY_TRANSCRIPT = "transcript_enabled"
+        private const val KEY_MODEL_VARIANT = "model_variant"
         private const val KEY_HISTORY = "history"
         private const val MAX_HISTORY = 50
+
+        /** 模型标识（与 AsrEngine 的目录对应；放这里避免 data 层反向依赖 service 层）。 */
+        object AsrModelIds {
+            const val BILINGUAL = "bilingual"
+            const val ZH_LIGHT = "zh_light"
+        }
 
         /** 默认核心词：短语级点名语。 */
         val DEFAULT_CORE = listOf(

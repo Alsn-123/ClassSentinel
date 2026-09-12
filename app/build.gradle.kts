@@ -22,8 +22,8 @@ android {
         applicationId = "com.classguard.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "2.4"
+        versionCode = 8
+        versionName = "2.5"
 
         ndk {
             // 真机为 arm64，模拟器为 x86_64；Android 8+ 设备几乎全是 arm64

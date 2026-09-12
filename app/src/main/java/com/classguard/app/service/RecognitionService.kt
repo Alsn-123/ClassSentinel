@@ -174,16 +174,27 @@ class RecognitionService : Service() {
 
         // 模型完整性校验（190MB 哈希）与模型加载都在工作线程，主线程零阻塞
         worker = thread(name = "asr-loop") {
-            val integrityProblem = if (prefs.modelIntegrityOk) null else ModelIntegrity.verify(assets)
+            // 模型完整性校验（按所选模型）与模型加载都在工作线程，主线程零阻塞
+            val modelId = prefs.modelVariant
+            val integrityProblem = if (prefs.modelIntegrityOk && prefs.modelIntegrityModel == modelId) {
+                null
+            } else {
+                ModelIntegrity.verify(assets, modelId)
+            }
             if (integrityProblem != null) {
                 ServiceBus.setError(integrityProblem)
                 failAndStop()
                 return@thread
             }
             prefs.modelIntegrityOk = true
+            prefs.modelIntegrityModel = modelId
 
             try {
-                recognizer = AsrEngine.createRecognizer(this@RecognitionService)
+                // 按用户选择的模型创建识别器（切换模型需停止监听后重新开始）
+                recognizer = AsrEngine.createRecognizer(
+                    this@RecognitionService,
+                    modelId = modelId,
+                )
             } catch (t: Throwable) {
                 AsrEngine.logLoadError(t)
                 ServiceBus.setError(getString(R.string.error_model_load))

@@ -30,10 +30,36 @@ object AsrEngine {
 
     private const val TAG = "AsrEngine"
 
-    const val ENCODER = "asr-model/encoder-int8.onnx"
-    const val DECODER = "asr-model/decoder-int8.onnx"
-    const val JOINER = "asr-model/joiner-int8.onnx"
-    const val TOKENS = "asr-model/tokens.txt"
+    /** 模型定义（v2.5 可选模型）：目录、展示名与适用说明。 */
+    data class ModelDef(
+        val id: String,
+        val dir: String,
+        val label: String,
+        val desc: String,
+    )
+
+    val MODELS = listOf(
+        ModelDef(
+            "bilingual", "asr-model",
+            "标准 · 中英双语（推荐）",
+            "默认。中文精度最高，真人远场语音识别明显更准；含英文词表，会把部分" +
+                "中文音节认成英文碎片（软件已自动过滤显示）。实测姓名识别 + 热词偏置均正常。",
+        ),
+        ModelDef(
+            "zh_light", "asr-model-zh",
+            "轻量 · 中文专用",
+            "词表纯中文，英文碎片彻底为零，加载快、省电，适合中低端机型。" +
+                "实测：合成语音精度接近标准模型，但真人远场语音明显更弱，" +
+                "且热词偏置不生效（姓名仍可触发，靠读音纠偏兜底）。请用自测对比后选择。",
+        ),
+    )
+
+    fun modelDef(id: String): ModelDef = MODELS.firstOrNull { it.id == id } ?: MODELS.first()
+
+    const val ENCODER = "encoder-int8.onnx"
+    const val DECODER = "decoder-int8.onnx"
+    const val JOINER = "joiner-int8.onnx"
+    const val TOKENS = "tokens.txt"
 
     /**
      * 热词偏置分（v2.3 由 2.0 提到 3.5）。
@@ -76,18 +102,20 @@ object AsrEngine {
         context: Context,
         hotwordsScore: Float = HOTWORDS_SCORE,
         maxActivePaths: Int = 4,
-    ): OnlineRecognizer =
-        OnlineRecognizer(
+        modelId: String = com.classguard.app.data.PrefsStore.Companion.AsrModelIds.BILINGUAL,
+    ): OnlineRecognizer {
+        val dir = modelDef(modelId).dir
+        return OnlineRecognizer(
             assetManager = context.assets,
             config = OnlineRecognizerConfig(
                 featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
                 modelConfig = OnlineModelConfig(
                     transducer = OnlineTransducerModelConfig(
-                        encoder = ENCODER,
-                        decoder = DECODER,
-                        joiner = JOINER,
+                        encoder = "$dir/$ENCODER",
+                        decoder = "$dir/$DECODER",
+                        joiner = "$dir/$JOINER",
                     ),
-                    tokens = TOKENS,
+                    tokens = "$dir/$TOKENS",
                     numThreads = 2,
                     debug = false,
                     // 热词按字级单元编码（词表里中文均为单字 token）；
@@ -119,13 +147,19 @@ object AsrEngine {
                 hotwordsScore = hotwordsScore,
             ),
         )
+    }
 
-    /** assets 里是否已经放好模型（用于自测按钮的显隐）。 */
-    fun modelPresent(assets: android.content.res.AssetManager): Boolean = runCatching {
-        assets.open(TOKENS).use { it.read() >= 0 }
-    }.getOrDefault(false)
+    /** 指定模型的四个文件是否齐全（模型选择卡的可用性判定）。 */
+    fun modelPresent(assets: android.content.res.AssetManager, modelId: String): Boolean {
+        val dir = modelDef(modelId).dir
+        return runCatching {
+            listOf(ENCODER, DECODER, JOINER, TOKENS).all { file ->
+                assets.open("$dir/$file").use { it.read() >= 0 }
+            }
+        }.getOrDefault(false)
+    }
 
     fun logLoadError(t: Throwable) {
-        Log.e(TAG, "模型加载失败，请检查 assets/asr-model", t)
+        Log.e(TAG, "模型加载失败，请检查 assets 模型目录", t)
     }
 }

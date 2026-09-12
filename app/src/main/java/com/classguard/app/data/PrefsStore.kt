@@ -101,6 +101,15 @@ class PrefsStore(context: Context) {
         get() = sp.getBoolean(KEY_TRANSCRIPT, false)
         set(value) = sp.edit().putBoolean(KEY_TRANSCRIPT, value).apply()
 
+    /**
+     * AI 修正转写文本开关（v2.6，默认关闭）。
+     * 开启前提：实验功能里已启用 AI 并配置接口 + 转写开关已开。
+     * 隐私：开启后识别文本与名单姓名会发送到用户自配的 API 服务商。
+     */
+    var aiRefineEnabled: Boolean
+        get() = sp.getBoolean(KEY_AI_REFINE, false)
+        set(value) = sp.edit().putBoolean(KEY_AI_REFINE, value).apply()
+
     // ------------------------------------------------------ 识别模型
 
     /**
@@ -165,6 +174,7 @@ class PrefsStore(context: Context) {
         private const val KEY_MODEL_INTEGRITY = "model_integrity_ok"
         private const val KEY_MODEL_INTEGRITY_MODEL = "model_integrity_model"
         private const val KEY_TRANSCRIPT = "transcript_enabled"
+        private const val KEY_AI_REFINE = "ai_refine_enabled"
         private const val KEY_MODEL_VARIANT = "model_variant"
         private const val KEY_HISTORY = "history"
         private const val MAX_HISTORY = 50

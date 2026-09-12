@@ -36,6 +36,7 @@ import com.classguard.app.recognition.RosterMatcher
 import com.classguard.app.tile.ClassSentinelTileService
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.thread
 
 /**
@@ -169,6 +170,7 @@ class RecognitionService : Service() {
         ServiceBus.setPartial("")
         ServiceBus.setModelLoading(true)
         rebuildMatchers()
+        refreshAiRefiner()
         hotwordsText = AsrEngine.buildHotwordsText(prefs.keywordSpecs, prefs.roster)
         acquireWakeLock()
 
@@ -238,9 +240,54 @@ class RecognitionService : Service() {
     private fun applySettingsInPlace() {
         if (!running) return
         rebuildMatchers()
+        refreshAiRefiner()
         hotwordsText = AsrEngine.buildHotwordsText(prefs.keywordSpecs, prefs.roster)
         streamRebuildNeeded = true
         Log.i(TAG, "设置已原地生效，待重建热词流")
+    }
+
+    // ------------------------------------------------------ AI 修正（v2.6 可选）
+
+    /** AI 修正器缓存（配置/名单变更时刷新）；null = 未启用或配置不完整。 */
+    @Volatile
+    private var aiRefiner: com.classguard.app.ai.AiRefiner? = null
+
+    /** 转写请求串行化：避免每句一发请求轰炸自配接口。 */
+    private val aiRefineMutex = kotlinx.coroutines.sync.Mutex()
+
+    /** 按当前设置刷新 AI 修正器（服务启动与设置变更时调用）。 */
+    private fun refreshAiRefiner() {
+        aiRefiner = if (!prefs.aiRefineEnabled) {
+            null
+        } else {
+            runCatching {
+                val store = com.classguard.app.ai.AiConfigStore(this)
+                val cfg = store.load()
+                val key = store.plainApiKey(cfg)
+                if (!cfg.enabled || cfg.baseUrl.isBlank() || key == null) {
+                    null
+                } else {
+                    val names = prefs.roster.flatMap { it.allTexts() }.distinct()
+                    com.classguard.app.ai.AiRefiner(
+                        com.classguard.app.ai.OpenAiCompatibleProvider(
+                            cfg.baseUrl, key, cfg.model.ifBlank { "gpt-4o-mini" }
+                        ),
+                        names,
+                    )
+                }
+            }.getOrNull()
+        }
+    }
+
+    /**
+     * AI 修正一句识别文本（转写入库前）。开启条件不满足、失败或超时时返回原文。
+     * 串行执行（Mutex），单句最长等 12 秒，失败不影响入库节奏。
+     */
+    private suspend fun refineWithAi(text: String): String {
+        val refiner = aiRefiner ?: return text
+        return kotlinx.coroutines.withTimeoutOrNull(12_000) {
+            aiRefineMutex.withLock { refiner.refine(text) }
+        } ?: text
     }
 
     private fun rebuildMatchers() {
@@ -364,10 +411,13 @@ class RecognitionService : Service() {
                         if (cleanText.isNotBlank()) {
                             dbScope.launch {
                                 runCatching {
+                                    // AI 修正（可选，默认关）：开启后文本会发送到用户自配的 API。
+                                    // 失败/超时/未启用一律回退清理后的原文，不影响入库。
+                                    val textForDb = refineWithAi(cleanText)
                                     TranscriptRepository.get(this@RecognitionService).addSegment(
                                         sessionId = sid,
                                         timeMillis = System.currentTimeMillis(),
-                                        text = cleanText,
+                                        text = textForDb,
                                         isTrigger = kw != null,
                                         keyword = kw,
                                     )

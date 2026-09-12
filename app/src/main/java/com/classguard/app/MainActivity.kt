@@ -552,6 +552,7 @@ private fun SettingsScreen(activity: MainActivity, onBack: () -> Unit) {
 
     var transcriptOn by remember { mutableStateOf(prefs.transcriptEnabled) }
     var showExperimental by remember { mutableStateOf(false) }
+    var aiRefineOn by remember { mutableStateOf(prefs.aiRefineEnabled) }
     val aiStore = remember { AiConfigStore(activity) }
     val aiInitial = remember { aiStore.load() }
     var aiEnabled by remember { mutableStateOf(aiInitial.enabled) }
@@ -928,14 +929,21 @@ private fun SettingsScreen(activity: MainActivity, onBack: () -> Unit) {
                 Text(if (showExperimental) "收起实验功能" else "实验功能 ▾", fontSize = 12.sp)
             }
             if (showExperimental) {
-                SectionCard("实验性 · AI 答题口子") {
+                SectionCard("实验性 · AI 功能") {
                     Text(
-                        "默认关闭。核心识别链路永不联网；仅当你在此显式启用并配置自己的接口后，" +
-                            "对应模块才会发起网络请求。接口需兼容 OpenAI /chat/completions。",
+                        "默认关闭。核心识别/触发/提醒链路永不联网；仅当你在此显式启用并配置自己的接口后，" +
+                            "对应功能才会发起网络请求。接口需兼容 OpenAI /chat/completions。",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    SettingSwitch("启用（当前版本无任何自动调用）", aiEnabled) { aiEnabled = it }
+                    SettingSwitch("启用 AI 接口", aiEnabled) { aiEnabled = it }
+                    if (!aiEnabled) {
+                        Text(
+                            "启用并配置接口后，可选开启下方「AI 修正转写文本」。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     OutlinedTextField(
                         value = aiBaseUrl,
                         onValueChange = { aiBaseUrl = it },
@@ -957,6 +965,40 @@ private fun SettingsScreen(activity: MainActivity, onBack: () -> Unit) {
                         placeholder = { Text("API Key（Keystore 加密保存；留空保留旧值）") },
                         singleLine = true,
                     )
+                    // AI 修正转写（v2.6 可选）
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("AI 修正转写文本", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    "开启后，每句转写会先发送到你配置的接口做文字校对" +
+                                        "（纠正同音错字、人名、英文碎片），再存入课堂记录。" +
+                                        "名单姓名会一并作为纠错候选发送。需要同时开启「课堂记录」。",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = aiRefineOn,
+                                enabled = aiEnabled,
+                                onCheckedChange = {
+                                    aiRefineOn = it
+                                    prefs.aiRefineEnabled = it
+                                    activity.notifySettingsChanged()
+                                },
+                            )
+                        }
+                        if (aiRefineOn && !prefs.transcriptEnabled) {
+                            Text(
+                                "⚠ 转写开关当前是关闭的，AI 修正不会生效；请到「课堂记录」卡开启转写。",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = {
                             aiStore.save(

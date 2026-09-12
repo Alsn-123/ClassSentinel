@@ -11,6 +11,7 @@ import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
@@ -31,7 +32,12 @@ import com.classguard.app.R
 import com.classguard.app.recognition.TriggerEvent
 
 /**
- * 触发提醒：顶部悬浮横幅（需“显示在其他应用上层”权限）+ 震动 + 提示音 + 高优先级通知兜底。
+ * 触发提醒：顶部悬浮横幅（需"显示在其他应用上层"权限）+ 震动 + 提示音 + 高优先级通知兜底。
+ *
+ * v2.6 定向提醒醒目化：
+ * - 熄屏/锁屏：通知挂 fullScreenIntent → 全屏提醒页（AlertActivity）点亮屏幕弹出
+ * - 亮屏：加强横幅 + 闹钟级铃声（比通知音更刺耳，尊重提示音开关）
+ * - 重复提醒：定向提醒 8 秒后未处理则再震一次响一次（最多补 1 次）
  *
  * 悬浮窗视图生命周期完全由本对象管理（显示/超时自动移除/替换时先移除旧视图），
  * 视图持有的是应用级 Service Context，不指向 Activity，无实际泄漏。
@@ -43,18 +49,21 @@ object AlertManager {
     private const val CHANNEL_ALERTS = "alerts"
     private const val NOTIF_ID_ALERT = 2001
     private const val OVERLAY_TIMEOUT_MS = 8_000L
+    private const val DIRECTED_REPEAT_DELAY_MS = 8_000L
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var overlayView: View? = null
     private var dismissRunnable: Runnable? = null
+    private var repeatRunnable: Runnable? = null
+    private var alertPlayer: MediaPlayer? = null
 
     fun canDrawOverlays(context: Context): Boolean = Settings.canDrawOverlays(context)
 
     /**
-     * 触发提醒（v2.0 分级）。
+     * 触发提醒（v2.0 分级 / v2.6 定向醒目化）。
      * @param fullAlert true=高置信/未知置信：悬浮横幅+震动+通知全量；
      *                  false=低置信：仅轻量通知（压降识别错字导致的误触发骚扰）
-     * @param event.directed true=点到"我的名字"：横幅加大、专属文案与更强震动
+     * @param event.directed true=点到"我的名字"：全屏提醒（熄屏亮屏弹出）+ 横幅 + 铃声 + 重复提醒
      */
     fun onTrigger(
         context: Context,
@@ -66,10 +75,64 @@ object AlertManager {
         if (fullAlert) {
             showOverlay(context, event)
             if (vibration) vibrate(context, directed = event.directed)
-            postNotification(context, event, sound, highPriority = event.directed || sound)
+            if (event.directed && sound) playLoudAlert(context)
+            postNotification(context, event, sound = sound, highPriority = event.directed || sound)
+            scheduleDirectedRepeat(context, event, sound, vibration)
         } else {
             postNotification(context, event, sound = false, highPriority = false)
         }
+    }
+
+    /**
+     * 定向提醒的补响：8 秒后若可能没注意到（横幅已超时消失），再震一次响一次。
+     * 仅补 1 次，避免骚扰；用户点了"我知道了"（全屏页）说明已看到，横幅场景无法感知，接受这次补响。
+     */
+    private fun scheduleDirectedRepeat(
+        context: Context,
+        event: TriggerEvent,
+        sound: Boolean,
+        vibration: Boolean,
+    ) {
+        if (!event.directed) return
+        repeatRunnable?.let(mainHandler::removeCallbacks)
+        repeatRunnable = Runnable {
+            if (vibration) vibrate(context, directed = true)
+            if (sound) playLoudAlert(context)
+        }.also { mainHandler.postDelayed(it, DIRECTED_REPEAT_DELAY_MS) }
+    }
+
+    /**
+     * 播放闹钟级提示音（directed 专用）：普通通知音在课堂上不够响。
+     * 依次尝试 闹钟铃声 → 电话铃声 → 通知音，播放约 3.5 秒后停止。
+     */
+    private fun playLoudAlert(context: Context) {
+        runCatching {
+            stopLoudAlert()
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                ?: return
+            val player = MediaPlayer()
+            player.setDataSource(context, uri)
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            player.prepare()
+            player.start()
+            alertPlayer = player
+            mainHandler.postDelayed({ stopLoudAlert() }, 3_500L)
+        }.onFailure { Log.w(TAG, "响铃播放失败", it) }
+    }
+
+    private fun stopLoudAlert() {
+        alertPlayer?.let {
+            runCatching { it.stop() }
+            runCatching { it.release() }
+        }
+        alertPlayer = null
     }
 
     // ---------------------------------------------------------------- 悬浮窗
@@ -104,8 +167,8 @@ object AlertManager {
 
                 wm.addView(view, params)
                 overlayView = view
-                // 定向提醒（点到名字）停留久一些
-                val timeout = if (event.directed) OVERLAY_TIMEOUT_MS * 3 / 2 else OVERLAY_TIMEOUT_MS
+                // 定向提醒（点到名字）停留更久，给用户足够的反应时间
+                val timeout = if (event.directed) OVERLAY_TIMEOUT_MS * 9 / 4 else OVERLAY_TIMEOUT_MS
                 dismissRunnable = Runnable { dismissOverlay(context) }
                     .also { mainHandler.postDelayed(it, timeout) }
             } catch (t: Throwable) {
@@ -114,7 +177,8 @@ object AlertManager {
         }
     }
 
-    fun dismissOverlay(context: Context) {
+    fun dismissOverlay(context: Context, userDismissed: Boolean = false) {
+        if (userDismissed) cancelDirectedRepeat()
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         mainHandler.post {
             overlayView?.let {
@@ -122,6 +186,13 @@ object AlertManager {
                 overlayView = null
             }
         }
+    }
+
+    /** 用户已确认看到提醒（点了横幅或全屏页的"我知道了"），取消补响。 */
+    fun cancelDirectedRepeat() {
+        repeatRunnable?.let(mainHandler::removeCallbacks)
+        repeatRunnable = null
+        stopLoudAlert()
     }
 
     private fun buildOverlayView(context: Context, event: TriggerEvent): LinearLayout {
@@ -137,7 +208,7 @@ object AlertManager {
                 setColor(if (event.directed) 0xEE5C1010.toInt() else 0xEE1C1C1E.toInt())
                 setStroke(dp(1), if (event.directed) 0xFFE57373.toInt() else 0xFF3A3A3C.toInt())
             }
-            setOnClickListener { dismissOverlay(context) }
+            setOnClickListener { dismissOverlay(context, userDismissed = true) }
         }
 
         val title = TextView(context).apply {
@@ -147,7 +218,7 @@ object AlertManager {
                 context.getString(R.string.alert_title)
             }
             setTextColor(0xFFFFD54F.toInt())
-            textSize = if (event.directed) 17f else 15f
+            textSize = if (event.directed) 22f else 15f
             typeface = Typeface.DEFAULT_BOLD
         }
         root.addView(title)
@@ -158,14 +229,14 @@ object AlertManager {
             val label = TextView(context).apply {
                 text = "题目"
                 setTextColor(0xFF90A4AE.toInt())
-                textSize = 11f
+                textSize = if (event.directed) 13f else 11f
             }
             val question = TextView(context).apply {
                 text = event.context
                 setTextColor(Color.WHITE)
-                textSize = if (event.directed) 20f else 18f
+                textSize = if (event.directed) 24f else 18f
                 typeface = Typeface.DEFAULT_BOLD
-                setLineSpacing(dp(2).toFloat(), 1f)
+                setLineSpacing(dp(3).toFloat(), 1f)
             }
             root.addView(
                 label,
@@ -266,6 +337,22 @@ object AlertManager {
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setAutoCancel(true)
             .setContentIntent(openIntent)
+
+        // 定向提醒（v2.6）：熄屏/锁屏时通过全屏意图直接点亮屏幕弹出提醒页。
+        // Android 14+ 首次触发时系统会弹授权引导；用户拒绝则自动降级为横幅通知。
+        if (event.directed) {
+            val fullScreen = PendingIntent.getActivity(
+                context, 2025,
+                Intent(context, AlertActivity::class.java)
+                    .putExtra(AlertActivity.EXTRA_KEYWORD, event.keyword)
+                    .putExtra(AlertActivity.EXTRA_QUESTION, event.context)
+                    .putExtra(AlertActivity.EXTRA_UTTERANCE, event.utterance)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.setFullScreenIntent(fullScreen, true)
+        }
+
         if (!sound) builder.setSilent(true)
 
         runCatching {

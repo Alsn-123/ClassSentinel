@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 定向提醒（点到名字）熄屏/锁屏全屏弹出的权限；Android 14+ 默认关闭，
+         首次定向提醒时系统会引导用户授权，拒绝则降级为横幅通知 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- 仅「实验性 AI 答题」模块使用（默认关闭、需用户显式启用）；
          识别/触发/提醒核心链路永不联网 -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -47,6 +50,15 @@
         <activity
             android:name=".transcript.TranscriptActivity"
             android:exported="false" />
+
+        <!-- 定向提醒全屏页：熄屏/锁屏点亮屏幕，fullScreenIntent 触发 -->
+        <activity
+            android:name=".alert.AlertActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true" />
 
         <service
             android:name=".service.RecognitionService"

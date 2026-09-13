@@ -86,26 +86,6 @@ object ModelIntegrity {
         return null
     }
 
-    /** 首次校验通过后缓存结果（按模型记忆），后续启动不再重复哈希模型文件。 */
-    fun isVerifiedAndCached(context: Context, assets: AssetManager, modelId: String): Boolean {
-        val prefs = com.classguard.app.data.PrefsStore(context)
-        if (prefs.modelIntegrityOk && prefs.modelIntegrityModel == modelId) return true
-        val problem = verify(assets, modelId)
-        if (problem == null) {
-            prefs.modelIntegrityOk = true
-            prefs.modelIntegrityModel = modelId
-        } else {
-            prefs.modelIntegrityOk = false
-        }
-        return problem == null
-    }
-
-    fun resetCache(context: Context) {
-        val prefs = com.classguard.app.data.PrefsStore(context)
-        prefs.modelIntegrityOk = false
-        prefs.modelIntegrityModel = ""
-    }
-
     private fun verifyOne(assets: AssetManager, exp: Expectation): String? {
         return try {
             assets.open(exp.path).use { input ->

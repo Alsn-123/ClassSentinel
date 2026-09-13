@@ -1,0 +1,13 @@
+# 统一行尾：仓库内一律 LF，消除跨平台 CRLF 警告
+* text=auto eol=lf
+
+# Windows 脚本保持 CRLF
+*.bat text eol=crlf
+
+# 二进制文件不做行尾处理
+*.png binary
+*.wav binary
+*.onnx binary
+*.jar binary
+*.so binary
+*.apk binary

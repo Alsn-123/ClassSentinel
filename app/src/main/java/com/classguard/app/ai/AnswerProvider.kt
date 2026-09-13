@@ -14,7 +14,7 @@ import java.net.URL
  * 用户显式启用 AiConfig.enabled 且完成接口配置。
  */
 interface AnswerProvider {
-    suspend fun answer(question: String, context: String? = null): Result<String>
+    suspend fun answer(question: String, context: String? = null, maxTokens: Int? = null): Result<String>
 }
 
 /** OpenAI 兼容 /chat/completions 实现（零第三方依赖，HttpURLConnection）。 */
@@ -23,9 +23,11 @@ class OpenAiCompatibleProvider(
     private val apiKey: String,
     private val model: String,
     private val timeoutMillis: Int = 15_000,
+    /** 输出上限；校对场景按原文长度估算传入，防幻觉也省 token。 */
+    private val maxTokens: Int? = null,
 ) : AnswerProvider {
 
-    override suspend fun answer(question: String, context: String?): Result<String> =
+    override suspend fun answer(question: String, context: String?, maxTokens: Int?): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val url = URL(baseUrl.trimEnd('/') + "/chat/completions")
@@ -37,7 +39,7 @@ class OpenAiCompatibleProvider(
                     setRequestProperty("Content-Type", "application/json")
                     setRequestProperty("Authorization", "Bearer $apiKey")
                 }
-                val body = buildRequestJson(question, context, model).toString()
+                val body = buildRequestJson(question, context, model, maxTokens ?: this@OpenAiCompatibleProvider.maxTokens).toString()
                 conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 val code = conn.responseCode
                 val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
@@ -49,16 +51,23 @@ class OpenAiCompatibleProvider(
         }
 
     companion object {
-        /** 请求体。 */
-        fun buildRequestJson(question: String, context: String?, model: String): JSONObject =
+        /** 请求体。maxTokens 非空时限制输出长度（省 token + 防幻觉）。 */
+        fun buildRequestJson(
+            question: String,
+            context: String?,
+            model: String,
+            maxTokens: Int? = null,
+        ): JSONObject =
             JSONObject().apply {
                 put("model", model)
+                put("temperature", 0)
                 val messages = org.json.JSONArray()
                 if (!context.isNullOrBlank()) {
                     messages.put(JSONObject().put("role", "system").put("content", context))
                 }
                 messages.put(JSONObject().put("role", "user").put("content", question))
                 put("messages", messages)
+                maxTokens?.let { put("max_tokens", it) }
             }
 
         /** 解析 /chat/completions 响应中的回答文本（纯函数，单测覆盖）。 */

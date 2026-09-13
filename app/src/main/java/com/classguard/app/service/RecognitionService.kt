@@ -273,6 +273,7 @@ class RecognitionService : Service() {
                             cfg.baseUrl, key, cfg.model.ifBlank { "gpt-4o-mini" }
                         ),
                         names,
+                        pinyin = PinyinIndex.holder(this),
                     )
                 }
             }.getOrNull()
@@ -280,7 +281,7 @@ class RecognitionService : Service() {
     }
 
     /**
-     * AI 修正一句识别文本（转写入库前）。开启条件不满足、失败或超时时返回原文。
+     * AI 修正一句识别文本（转写入库前）。开启条件不满足、判定无需修正、失败或超时时返回原文。
      * 串行执行（Mutex），单句最长等 12 秒，失败不影响入库节奏。
      */
     private suspend fun refineWithAi(text: String): String {

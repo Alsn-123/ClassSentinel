@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -77,10 +79,14 @@ private fun TranscriptScreen(
     val scope = rememberCoroutineScope()
     val sessions by repository.sessions().collectAsState(initial = emptyList())
     var openSessionId by remember { mutableStateOf<Long?>(null) }
+    // 破坏性操作确认：pending 置为待执行动作，用户确认后执行
+    var pendingClearAll by remember { mutableStateOf(false) }
+    var pendingDeleteId by remember { mutableStateOf<Long?>(null) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .systemBarsPadding()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -92,11 +98,7 @@ private fun TranscriptScreen(
                 modifier = Modifier.weight(1f),
             )
             if (sessions.isNotEmpty() && openSessionId == null) {
-                TextButton(onClick = {
-                    activity.lifecycleScope.launch {
-                        withContext(Dispatchers.IO) { repository.deleteAll() }
-                    }
-                }) { Text("清空全部") }
+                TextButton(onClick = { pendingClearAll = true }) { Text("清空全部") }
             }
             TextButton(onClick = onFinish) { Text("关闭") }
         }
@@ -136,11 +138,9 @@ private fun TranscriptScreen(
                                         shareText(activity, buildExportText(session, segs))
                                     }
                                 }) { Text("分享") }
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        withContext(Dispatchers.IO) { repository.deleteSession(session.id) }
-                                    }
-                                }) { Text("删除", color = Color(0xFFB71C1C)) }
+                                TextButton(onClick = { pendingDeleteId = session.id }) {
+                                    Text("删除", color = Color(0xFFB71C1C))
+                                }
                             }
                         }
                     }
@@ -197,6 +197,40 @@ private fun TranscriptScreen(
                 }
             }
         }
+    }
+
+    if (pendingClearAll) {
+        AlertDialog(
+            onDismissRequest = { pendingClearAll = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { withContext(Dispatchers.IO) { repository.deleteAll() } }
+                    pendingClearAll = false
+                }) { Text("清空", color = Color(0xFFB71C1C)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearAll = false }) { Text("取消") }
+            },
+            title = { Text("清空全部课堂记录？") },
+            text = { Text("所有会话与转写内容将被删除，不可恢复。") },
+        )
+    }
+
+    pendingDeleteId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteId = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { withContext(Dispatchers.IO) { repository.deleteSession(id) } }
+                    pendingDeleteId = null
+                }) { Text("删除", color = Color(0xFFB71C1C)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteId = null }) { Text("取消") }
+            },
+            title = { Text("删除这条课堂记录？") },
+            text = { Text("该节课的全部转写内容将被删除，不可恢复。") },
+        )
     }
 }
 

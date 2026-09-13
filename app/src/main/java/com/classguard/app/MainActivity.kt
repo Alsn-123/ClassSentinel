@@ -1010,6 +1010,8 @@ private fun SettingsScreen(activity: MainActivity, onBack: () -> Unit) {
                                 ),
                                 plainApiKey = aiKey.takeIf { it.isNotBlank() },
                             )
+                            // 同步刷新运行中的服务（否则 AI 修正还在用旧的地址/Key）
+                            activity.notifySettingsChanged()
                             Toast.makeText(activity, "已保存（Key 已加密）", Toast.LENGTH_SHORT).show()
                         }) { Text("保存") }
                         TextButton(

@@ -104,6 +104,7 @@ object AlertManager {
     /**
      * 播放闹钟级提示音（directed 专用）：普通通知音在课堂上不够响。
      * 依次尝试 闹钟铃声 → 电话铃声 → 通知音，播放约 3.5 秒后停止。
+     * prepareAsync：补响跑在主线程，同步 prepare 会卡顿（解码/IO 阻塞几十毫秒）。
      */
     private fun playLoudAlert(context: Context) {
         runCatching {
@@ -120,8 +121,8 @@ object AlertManager {
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build()
             )
-            player.prepare()
-            player.start()
+            player.setOnPreparedListener { it.start() }
+            player.prepareAsync()
             alertPlayer = player
             mainHandler.postDelayed({ stopLoudAlert() }, 3_500L)
         }.onFailure { Log.w(TAG, "响铃播放失败", it) }

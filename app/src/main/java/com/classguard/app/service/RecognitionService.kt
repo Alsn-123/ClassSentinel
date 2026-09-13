@@ -241,6 +241,20 @@ class RecognitionService : Service() {
         if (!running) return
         rebuildMatchers()
         refreshAiRefiner()
+        // 转写开关中途切换也要生效（此前只在服务启动时建会话，监听中打开开关本节课不会录）。
+        // 结束会话用异步版：applySettings 跑在主线程，不能像 onDestroy 那样同步等待落库
+        val activeSession = transcriptSessionId
+        if (prefs.transcriptEnabled && activeSession == null) {
+            startTranscriptIfEnabled()
+        } else if (!prefs.transcriptEnabled && activeSession != null) {
+            transcriptSessionId = null
+            dbScope.launch {
+                runCatching {
+                    TranscriptRepository.get(this@RecognitionService)
+                        .endSession(activeSession, System.currentTimeMillis())
+                }
+            }
+        }
         hotwordsText = AsrEngine.buildHotwordsText(prefs.keywordSpecs, prefs.roster)
         streamRebuildNeeded = true
         Log.i(TAG, "设置已原地生效，待重建热词流")
@@ -341,6 +355,7 @@ class RecognitionService : Service() {
         var stream = rec.createStream(hotwordsText)
         val shorts = ShortArray(CHUNK)
         val floats = FloatArray(CHUNK)
+        var lastPartial = ""
 
         // 设备级降噪 + 自动增益（多数真机可用；不可用时 VOICE_RECOGNITION 源自带 HAL 预处理，属预期）
         var noiseSuppressor: NoiseSuppressor? = null
@@ -382,7 +397,10 @@ class RecognitionService : Service() {
 
                 val result = rec.getResult(stream)
                 val partial = result.text
-                if (partial.isNotEmpty()) {
+                // partial 去重（性能）：流式结果在无新 token 时原样重发（约 100ms 一次），
+                // 文本未变则跳过整套清理与匹配（含逐名单名的 DP 对齐），消除固定开销
+                if (partial.isNotEmpty() && partial != lastPartial) {
+                    lastPartial = partial
                     // 展示层与入库同口径：姓名写回真名 + 折叠卡顿 + 过滤英文碎片，
                     // 避免实时字幕里出现"阳丽真ED铮珍M"这类识别畸变
                     ServiceBus.setPartial(cleanForRecord(partial))
@@ -400,6 +418,7 @@ class RecognitionService : Service() {
                     }
                     rosterMatcher?.onFinal()
                     rec.reset(stream)
+                    lastPartial = ""
                     ServiceBus.setPartial("")
                     // 课堂转写：本句入库（触发句带关键词标记）。
                     // fix: 姓名畸变写回真名 + 清理卡顿/英文碎片——触发判定跑在 partial 上，
